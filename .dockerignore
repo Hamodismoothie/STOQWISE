@@ -1,0 +1,13 @@
+node_modules
+.tools
+.git
+data
+reports
+tests
+docs
+samples
+*.png
+*.log
+.env
+.env.*
+!.env.example

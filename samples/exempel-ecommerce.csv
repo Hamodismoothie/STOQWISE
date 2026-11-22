@@ -1,0 +1,38 @@
+Artikelnummer;Benämning;Kategori;Underkategori;Varumärke;Enhet;Hållbarhet dagar;Förvaring;Leverantör;Lagersaldo;Reserverat;Inköpspris;Försäljningspris;Ledtid dagar;MOQ;2025-12;2026-01;2026-02;2026-03;2026-04;2026-05;2026-06;2026-07;2026-08;2026-09;2026-10;2026-11
+CL-50001;Merinoulltröja herr;Kläder;Tröjor;Atelier;st;;;Atelier Nord AB;143;6;428,00;899,00;35;6;130;124;119;103;96;98;87;87;82;69;58;53
+CL-50002;Löparjacka dam;Kläder;Jackor;Löparlabbet;st;;;Löparlabbet AB;183;0;386,00;799,00;35;6;28;17;34;74;106;151;211;234;188;180;130;66
+CL-50003;Vinterjacka med huva;Kläder;Jackor;Atelier;st;;;Atelier Nord AB;128;0;824,00;1699,00;45;4;115;116;107;92;63;39;21;18;24;37;61;88
+CL-50004;Oversized hoodie i bomull;Kläder;Hoodies;Atelier;st;;;Atelier Nord AB;290;29;286,00;599,00;35;8;296;176;108;37;9;36;89;170;256;353;385;338
+CL-50005;T-shirt i ekologisk bomull;Kläder;T-shirts;Atelier;st;;;Atelier Nord AB;252;0;96,00;249,00;28;12;118;64;116;237;444;539;716;813;728;576;442;269
+CL-50006;Kompressionsstrumpor löpning 3-pack;Kläder;Strumpor;Löparlabbet;pack;;;Löparlabbet AB;353;0;118,00;249,00;28;10;68;41;71;162;270;432;526;500;466;448;310;176
+CL-50007;Träningstights dam;Kläder;Tights;Löparlabbet;st;;;Löparlabbet AB;261;16;246,00;499,00;35;6;286;328;299;242;157;111;59;37;57;103;170;245
+CL-50008;Keps i tvättad bomull;Kläder;Kepsar;Atelier;st;;;Atelier Nord AB;2016;0;86,00;199,00;28;12;56;33;60;119;243;308;343;425;395;296;227;135
+AC-50101;Lättviktsryggsäck 22 L;Accessoarer;Ryggsäckar;Friluft;st;;;Friluftsliv AB;161;0;348,00;699,00;35;4;26;15;27;63;107;160;162;180;173;164;97;53
+AC-50102;Bältesväska i återvunnen nylon;Accessoarer;Väskor;Atelier;st;;;Atelier Nord AB;203;24;168,00;349,00;28;8;132;154;149;137;146;140;125;150;141;126;141;134
+AC-50103;Ullhalsduk i ribbstick;Accessoarer;Scarfs;Atelier;st;;;Atelier Nord AB;704;0;148,00;299,00;35;6;136;169;129;131;85;61;34;21;31;49;84;114
+AC-50104;Vinterhandskar med touch;Accessoarer;Handskar;Atelier;par;;;Atelier Nord AB;180;0;128,00;249,00;35;6;169;212;206;169;120;69;38;27;42;68;108;174
+AC-50105;Stickad mössa;Accessoarer;Mössor;Atelier;st;;;Atelier Nord AB;235;19;86,00;179,00;28;10;267;266;259;221;161;102;60;39;63;112;157;227
+AC-50106;Solglasögon polariserade;Accessoarer;Glasögon;Friluft;st;;;Friluftsliv AB;58;0;186,00;379,00;28;6;27;15;22;57;95;134;155;177;182;139;101;56
+EL-50201;Trådlösa hörlurar over-ear;Elektronik;Ljud;Ljud&Co;st;;;Ljud & Bild Norden AB;118;0;648,00;1299,00;35;4;123;85;41;14;3;14;43;83;109;127;166;122
+EL-50202;USB-C laddkabel 2 m;Elektronik;Kablar;Ljud&Co;st;;;Ljud & Bild Norden AB;260;10;48,00;129,00;21;20;459;558;510;460;478;552;509;552;566;513;473;487
+EL-50203;Powerbank 20 000 mAh;Elektronik;Laddning;Ljud&Co;st;;;Ljud & Bild Norden AB;183;0;286,00;599,00;35;6;33;20;30;72;124;179;189;227;194;149;122;62
+EL-50204;Bärbar högtalare IPX7;Elektronik;Ljud;Ljud&Co;st;;;Ljud & Bild Norden AB;130;0;386,00;799,00;35;4;62;65;42;31;97;65;108;103;102;31;163;72
+EL-50205;Telefonställ i aluminium;Elektronik;Tillbehör;Ljud&Co;st;;;Ljud & Bild Norden AB;1209;121;62,00;149,00;21;12;200;188;199;185;172;207;194;178;193;167;205;203
+EL-50206;Armband till smartklocka 22 mm;Elektronik;Tillbehör;Ljud&Co;st;;;Ljud & Bild Norden AB;199;0;78,00;179,00;28;10;122;134;134;129;130;134;133;130;138;117;133;139
+HM-50301;Rostfri vattenflaska 750 ml;Hem;Dryck;Vardag;st;;;Vardagsrum Design AB;119;0;96,00;219,00;28;10;63;39;68;148;264;322;377;458;415;351;236;123
+HM-50302;Ljusstake i keramik;Hem;Inredning;Vardag;st;;;Vardagsrum Design AB;187;11;74,00;169,00;28;8;192;231;198;152;113;69;45;35;48;80;128;177
+HM-50303;Ullpläd 130×170;Hem;Textil;Vardag;st;;;Vardagsrum Design AB;406;0;318,00;649,00;35;4;92;97;100;74;56;37;18;15;21;40;61;73
+HM-50304;Förvaringskorg i rotting;Hem;Förvaring;Vardag;st;;;Vardagsrum Design AB;112;0;186,00;379,00;35;6;19;10;21;40;73;94;120;125;126;95;74;37
+HM-50305;Skrivbordslampa i metall;Hem;Belysning;Vardag;st;;;Vardagsrum Design AB;146;18;168,00;349,00;35;6;148;104;52;18;5;19;52;87;140;164;186;159
+PC-50401;Ansiktskräm med hyaluron;Personvård;Hudvård;Nordan;st;;;Hudvård Nord AB;243;0;112,00;249,00;28;10;336;321;336;252;177;112;75;49;72;131;209;241
+PC-50402;Schampokaka oparfymerad;Personvård;Hårvård;Nordan;st;;;Hudvård Nord AB;369;0;48,00;109,00;28;12;283;305;316;268;261;298;265;311;282;267;299;262
+PC-50403;Tandborsthuvuden, 4-pack;Personvård;Munvård;Nordan;pack;;;Hudvård Nord AB;230;18;96,00;199,00;35;8;144;161;150;159;142;138;139;152;160;133;146;149
+PC-50404;Handkräm shea 75 ml;Personvård;Hudvård;Nordan;st;;;Hudvård Nord AB;397;0;38,00;89,00;28;12;465;602;547;421;312;186;110;79;110;200;328;442
+SP-50501;Yogamatta 6 mm;Sport;Yoga;Friluft;st;;;Friluftsliv AB;168;0;168,00;349,00;35;6;103;121;112;109;98;99;110;104;115;97;105;118
+SP-50502;Motståndsband 3-pack;Sport;Träning;Friluft;pack;;;Friluftsliv AB;306;12;62,00;149,00;28;12;223;201;222;204;216;222;201;197;224;207;235;222
+SP-50503;Hantlar 2×5 kg;Sport;Styrka;Friluft;par;;;Friluftsliv AB;75;0;248,00;499,00;35;4;92;53;36;68;10;18;74;12;13;83;31;24
+SP-50504;Löparbälte med flaskhållare;Sport;Löpning;Löparlabbet;st;;;Löparlabbet AB;119;0;118,00;249,00;28;8;27;13;28;50;90;126;173;187;174;121;100;61
+SP-50505;Badshorts snabbtorkande;Sport;Simning;Löparlabbet;st;;;Löparlabbet AB;82;8;148,00;299,00;28;10;45;22;42;96;169;248;316;291;288;237;151;104
+SP-50506;Regnjacka packbar;Sport;Friluft;Friluft;st;;;Friluftsliv AB;127;0;386,00;799,00;35;6;139;151;140;104;83;53;28;19;30;56;89;122
+SP-50507;Sommarsandaler;Sport;Skor;Löparlabbet;par;;;Löparlabbet AB;211;0;168,00;349,00;35;6;33;18;35;83;134;192;218;261;229;200;123;73
+ZZ-50601;Utgången vintermössa 2024;Utgående;Accessoarer;Atelier;st;;;Atelier Nord AB;30;2;68,00;149,00;28;10;0;0;0;0;0;0;0;0;0;0;0;0

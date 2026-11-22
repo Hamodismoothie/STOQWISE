@@ -1,0 +1,139 @@
+import { describe, expect, test } from "bun:test";
+import { forecastSeries, supplyPlan, normalCdf, normalLoss, aggregateSeries } from "../src/core/forecast.ts";
+import type { ItemInput } from "../src/dataset.ts";
+
+const item = (monthly: number[], overrides: Partial<ItemInput> = {}): ItemInput => ({
+  sku: "A-1",
+  name: "Testartikel",
+  category: "Test",
+  supplier: "Lev",
+  stock: 100,
+  cost: 10,
+  price: 25,
+  leadTimeDays: 30,
+  moq: 12,
+  monthly,
+  totalSold: monthly.reduce((a, b) => a + b, 0),
+  totalRevenue: monthly.reduce((a, b) => a + b, 0) * 25,
+  ...overrides,
+});
+
+describe("normal distribution helpers", () => {
+  test("CDF ger kända värden", () => {
+    expect(normalCdf(0)).toBeCloseTo(0.5, 6);
+    expect(normalCdf(1.96)).toBeCloseTo(0.975, 3);
+    expect(normalCdf(-1.96)).toBeCloseTo(0.025, 3);
+  });
+
+  test("förlustfunktionen är positiv och avtar med högre lager", () => {
+    expect(normalLoss(0)).toBeCloseTo(0.3989, 3);
+    expect(normalLoss(2)).toBeLessThan(normalLoss(0));
+    expect(normalLoss(-2)).toBeGreaterThan(2);
+  });
+});
+
+describe("prognosmotor", () => {
+  test("jämn serie ger prognos nära nivån", () => {
+    const result = forecastSeries(Array(12).fill(100), { horizon: 6 });
+    expect(result.points).toHaveLength(6);
+    expect(result.points.every((p) => Math.abs(p.value - 100) < 1)).toBe(true);
+    expect(result.confidence).toBe("high");
+  });
+
+  test("prognosen ger intervall som omsluter punkten", () => {
+    const result = forecastSeries([10, 12, 9, 14, 11, 13, 10, 15, 12, 11, 13, 12], { horizon: 3 });
+    for (const p of result.points) {
+      expect(p.lo).toBeLessThanOrEqual(p.value);
+      expect(p.hi).toBeGreaterThanOrEqual(p.value);
+    }
+  });
+
+  test("glest förekommande efterfrågan väljer Croston eller SBA", () => {
+    const result = forecastSeries([0, 0, 0, 5, 0, 0, 0, 0, 3, 0, 0, 0], { horizon: 3 });
+    expect(result.intermittent).toBe(true);
+    expect(["croston", "sba", "naive"]).toContain(result.method);
+  });
+
+  test("modellval rapporterar alla kandidater med mått", () => {
+    const result = forecastSeries([5, 7, 6, 8, 9, 7, 10, 11, 9, 12, 11, 13, 12, 14, 13, 15, 14, 16], { horizon: 3 });
+    expect(result.candidates.length).toBeGreaterThan(1);
+    for (const c of result.candidates) {
+      expect(Number.isFinite(c.metrics.wape)).toBe(true);
+      expect(Number.isFinite(c.metrics.mae)).toBe(true);
+      expect(Number.isFinite(c.metrics.rmse)).toBe(true);
+    }
+    // Den valda modellen ska vara den med lägst WAPE.
+    const best = [...result.candidates].sort((a, b) => a.metrics.wape - b.metrics.wape)[0]!;
+    expect(result.method).toBe(best.method);
+  });
+
+  test("tom historik ger nollprognos med låg konfidens", () => {
+    const result = forecastSeries([], { horizon: 3 });
+    expect(result.method).toBe("zero");
+    expect(result.points.every((p) => p.value === 0)).toBe(true);
+    expect(result.confidence).toBe("low");
+  });
+
+  test("veckofrekvens ger fler steg än månader", () => {
+    const result = forecastSeries(Array(12).fill(40), { horizon: 1, frequency: "week" });
+    expect(result.points.length).toBeGreaterThan(4);
+    expect(result.points[0]!.value).toBeLessThan(40);
+  });
+});
+
+describe("lagerstyrning", () => {
+  test("beställningspunkt och säkerhetslager är positiva och konsistenta", () => {
+    const it = item([20, 22, 19, 21, 23, 20, 18, 22, 21, 20, 24, 19]);
+    const f = forecastSeries(it.monthly!, { horizon: 3 });
+    const plan = supplyPlan(it, f, { serviceLevel: 0.95 });
+
+    expect(plan.reorderPoint).toBeGreaterThan(plan.safetyStock);
+    expect(plan.safetyStock).toBeGreaterThan(0);
+    expect(plan.stockoutProbability).toBeGreaterThanOrEqual(0);
+    expect(plan.stockoutProbability).toBeLessThanOrEqual(1);
+    expect(plan.orderQuantity).toBeGreaterThanOrEqual(12); // MOQ respekteras
+    expect(plan.orderQuantity % 12).toBe(0);
+  });
+
+  test("högre servicenivå ger högre säkerhetslager", () => {
+    const it = item([10, 14, 9, 16, 11, 13, 10, 15, 12, 11, 13, 12]);
+    const f = forecastSeries(it.monthly!, { horizon: 3 });
+    const low = supplyPlan(it, f, { serviceLevel: 0.9 });
+    const high = supplyPlan(it, f, { serviceLevel: 0.99 });
+    expect(high.safetyStock).toBeGreaterThan(low.safetyStock);
+  });
+
+  test("reserverat lager minskar täckningen och räknas in i beställningsbehovet", () => {
+    const monthly = [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10];
+    const free = item(monthly, { stock: 100, reserved: 0 });
+    const held = item(monthly, { stock: 100, reserved: 95 });
+    const planFree = supplyPlan(free, forecastSeries(monthly, { horizon: 3 }));
+    const planHeld = supplyPlan(held, forecastSeries(monthly, { horizon: 3 }));
+    expect(planHeld.daysOfCover!).toBeLessThan(planFree.daysOfCover!);
+    expect(planHeld.stockoutProbability).toBeGreaterThan(planFree.stockoutProbability);
+    expect(planHeld.orderQuantity).toBeGreaterThanOrEqual(Math.ceil(planHeld.reorderPoint - 5));
+  });
+
+  test("stort lager ger låg bristrisk", () => {
+    const it = item([10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10], { stock: 5000 });
+    const f = forecastSeries(it.monthly!, { horizon: 3 });
+    const plan = supplyPlan(it, f);
+    expect(plan.stockoutProbability).toBeLessThan(0.01);
+    expect(plan.expectedShortageUnits).toBeLessThan(1);
+  });
+});
+
+describe("aggregering", () => {
+  test("summerar serier med olika längd", () => {
+    const series = aggregateSeries([
+      { monthly: [1, 2, 3] },
+      { monthly: [10, 20, 30] },
+      { monthly: null },
+    ]);
+    expect(series).toEqual([11, 22, 33]);
+  });
+
+  test("returnerar null utan historik", () => {
+    expect(aggregateSeries([{ monthly: null }])).toBeNull();
+  });
+});
