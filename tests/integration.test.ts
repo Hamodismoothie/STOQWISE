@@ -7,9 +7,12 @@
  * verifies that the second organisation cannot read the first one's data.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { demoCsv, buildDemoDataset } from "../src/demo.ts";
+import { config } from "../src/config.ts";
+import { PUBLIC_PAGES, sitemapXml } from "../src/seo.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const PORT = 3987;
@@ -32,11 +35,11 @@ async function form(path: string, fields: Record<string, string>, cookie: string
   });
 }
 
-async function register(email: string, company: string): Promise<string> {
+async function register(email: string, company: string, lang = "lr_lang=sv"): Promise<string> {
   const res = await fetch(`${BASE}/skapa-konto`, {
     method: "POST",
     redirect: "manual",
-    headers: { origin: BASE, "content-type": "application/x-www-form-urlencoded" },
+    headers: { origin: BASE, cookie: lang, "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       namn: "Test Testsson",
       foretag: company,
@@ -51,6 +54,33 @@ async function register(email: string, company: string): Promise<string> {
   return cookie;
 }
 
+async function importDemo(cookie: string, filename = "locale.csv"): Promise<string> {
+  const csv = demoCsv(buildDemoDataset());
+  const data = new FormData();
+  data.set("file", new File([csv], filename, { type: "text/csv" }));
+  data.set("lager", "Huvudlager");
+
+  const uploaded = await fetch(`${BASE}/app/importera`, {
+    method: "POST",
+    redirect: "manual",
+    headers: { origin: BASE, cookie },
+    body: data,
+  });
+  expect(uploaded.status).toBe(200);
+  const draft = (await uploaded.text()).match(/name="draft" value="([^"]+)"/)?.[1];
+  expect(draft).toBeTruthy();
+
+  const run = await form(
+    "/app/importera/kor",
+    { draft: draft!, lager: "Huvudlager", serviceniva: "0.95", dodlager: "180" },
+    cookie,
+  );
+  expect(run.status).toBe(303);
+  const analysisId = (run.headers.get("location") ?? "").match(/analys=([0-9a-f-]+)/)?.[1];
+  expect(analysisId).toBeTruthy();
+  return analysisId!;
+}
+
 beforeAll(async () => {
   for (const suffix of ["", "-shm", "-wal"]) {
     const file = `${DB}${suffix}`;
@@ -59,7 +89,7 @@ beforeAll(async () => {
 
   proc = Bun.spawn([process.execPath, "src/server.ts"], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), DB_PATH: DB, NODE_ENV: "test" },
+    env: { ...process.env, PORT: String(PORT), DB_PATH: DB, NODE_ENV: "test", RESEND_API_KEY: "", MAIL_FROM: "" },
     stdout: "ignore",
     stderr: "pipe",
   });
@@ -125,8 +155,12 @@ describe("publika sidor", () => {
     const pdf = await fetch(`${BASE}/exempelrapport.pdf`);
     expect(pdf.status).toBe(200);
     expect(pdf.headers.get("content-type")).toContain("application/pdf");
+    expect(pdf.headers.get("content-disposition")).toContain("sample-report.pdf");
     const bytes = new Uint8Array(await pdf.arrayBuffer());
     expect(String.fromCharCode(...bytes.slice(0, 4))).toBe("%PDF");
+
+    const swedishPdf = await fetch(`${BASE}/exempelrapport.pdf`, { headers: { cookie: "lr_lang=sv" } });
+    expect(swedishPdf.headers.get("content-disposition")).toContain("exempelrapport.pdf");
 
     const csv = await fetch(`${BASE}/api/demo-csv`);
     expect(csv.status).toBe(200);
@@ -135,12 +169,17 @@ describe("publika sidor", () => {
 
   test("publika demomiljöer har egna företag, sortiment och exporter", async () => {
     const industrial = await (await fetch(`${BASE}/produkt`)).text();
-    expect(industrial).toContain("Nordvind Industriförsörjning AB");
+    expect(industrial).toContain("Nordvind Industrial Supply AB");
     expect(industrial).toContain("Switch business environment");
 
     const home = await (await fetch(`${BASE}/produkt?miljo=hem`)).text();
-    expect(home).toContain("Ljusgården Hem");
-    expect(home).not.toContain("Nordvind Industriförsörjning AB");
+    expect(home).toContain("Ljusgården Home");
+    expect(home).not.toContain("Nordvind Industrial Supply AB");
+
+    const swedish = await (
+      await fetch(`${BASE}/produkt`, { headers: { cookie: "lr_lang=sv" } })
+    ).text();
+    expect(swedish).toContain("Nordvind Industriförsörjning AB");
 
     const foodCsv = await fetch(`${BASE}/api/demo-csv?miljo=foodservice`);
     expect(foodCsv.headers.get("content-disposition")).toContain("exempel-foodservice.csv");
@@ -293,11 +332,61 @@ describe("konto och import", () => {
     const sv = await fetch(`${BASE}/app/analys/${analysisId}/rapport.pdf`, { headers: { cookie } });
     expect(en.status).toBe(200);
     expect(sv.status).toBe(200);
+    expect(en.headers.get("content-disposition")).toContain(`inventory-report-${analysisId.slice(0, 8)}.pdf`);
+    expect(sv.headers.get("content-disposition")).toContain(`lagerrapport-${analysisId.slice(0, 8)}.pdf`);
     const enBytes = new Uint8Array(await en.arrayBuffer());
     const svBytes = new Uint8Array(await sv.arrayBuffer());
     expect(String.fromCharCode(...enBytes.slice(0, 4))).toBe("%PDF");
     expect(String.fromCharCode(...svBytes.slice(0, 4))).toBe("%PDF");
     expect(enBytes.length).not.toBe(svBytes.length);
+  });
+
+  test("engelsk registrering ger engelsk välkomstmejl, lagrat språk och engelsk PDF", async () => {
+    const email = "locale-en@test.se";
+    const company = "Locale English AB";
+    const cookie = await register(email, company, "lr_lang=en");
+    const analysisId = await importDemo(cookie);
+
+    const stored = new Database(DB);
+    try {
+      const user = stored.query("SELECT locale FROM users WHERE email = $e").get({ $e: email }) as { locale: string } | null;
+      const org = stored
+        .query(
+          `SELECT o.locale AS locale FROM organizations o
+           JOIN members m ON m.org_id = o.id
+           JOIN users u ON u.id = m.user_id
+           WHERE u.email = $e`,
+        )
+        .get({ $e: email }) as { locale: string } | null;
+      const mail = stored
+        .query("SELECT subject, body FROM mail_log WHERE kind = 'trial_welcome' AND to_email = $e ORDER BY id DESC LIMIT 1")
+        .get({ $e: email }) as { subject: string; body: string } | null;
+
+      expect(user?.locale).toBe("en");
+      expect(org?.locale).toBe("en");
+      expect(mail?.subject).toBe("Your STOQWISE trial is active");
+      expect(mail?.body).toContain(`The trial for ${company} is active`);
+      expect(mail?.body).toContain("Open STOQWISE");
+      expect(mail?.body).not.toContain("Provperioden");
+    } finally {
+      stored.close();
+    }
+
+    const dashboard = await fetch(`${BASE}/app?analys=${analysisId}`, { headers: { cookie } });
+    expect(dashboard.status).toBe(200);
+    const dashboardBody = await dashboard.text();
+    expect(dashboardBody).toContain("Overview");
+    expect(dashboardBody).not.toContain("Översikt");
+
+    const englishPdf = await fetch(`${BASE}/app/analys/${analysisId}/rapport.pdf`, { headers: { cookie } });
+    expect(englishPdf.status).toBe(200);
+    expect(englishPdf.headers.get("content-disposition")).toContain(`inventory-report-${analysisId.slice(0, 8)}.pdf`);
+
+    const swedishPdf = await fetch(`${BASE}/app/analys/${analysisId}/rapport.pdf`, {
+      headers: { cookie: `${cookie}; lr_lang=sv` },
+    });
+    expect(swedishPdf.status).toBe(200);
+    expect(swedishPdf.headers.get("content-disposition")).toContain(`lagerrapport-${analysisId.slice(0, 8)}.pdf`);
   });
 
   test("artikelvyn fungerar och visar prognos", async () => {
@@ -410,6 +499,16 @@ describe("konto och import", () => {
     const otherKey = decodeURIComponent((otherKeyRes.headers.get("location") ?? "").split("nyckel=")[1] ?? "");
     const stolen = await fetch(`${BASE}/api/v1/analyses/${analysisId}`, { headers: { authorization: `Bearer ${otherKey}` } });
     expect(stolen.status).toBe(404);
+
+    // Exporter och artikeldata får inte heller läcka mellan organisationer.
+    for (const suffix of ["export.csv", "export.xlsx", "rapport.pdf"]) {
+      const download = await fetch(`${BASE}/app/analys/${analysisId}/${suffix}`, { headers: { cookie: otherCookie } });
+      expect(download.status).toBe(404);
+    }
+    const items = await fetch(`${BASE}/api/v1/analyses/${analysisId}/items`, { headers: { authorization: `Bearer ${otherKey}` } });
+    expect(items.status).toBe(404);
+    const orgExport = await (await fetch(`${BASE}/app/export`, { headers: { cookie: otherCookie } })).text();
+    expect(orgExport).not.toContain("Första Bolaget AB");
   });
 
   test("läsnyckel får inte skriva", async () => {
@@ -456,9 +555,39 @@ describe("översatta publika sidor", () => {
 
   test("om oss, kontakt, hjälp och kom igång följer språkvalet", async () => {
     const about = await (await fetch(`${BASE}/om-oss`, { headers: sv })).text();
-    expect(about).toContain("Byggt kring lagerarbetets verklighet.");
-    expect(about).toContain("Grundare");
-    expect(about).not.toContain("Inventory intelligence, built from operations.");
+    expect(about).toContain("Vi gör lagerdata till bättre beslut.");
+    expect(about).toContain("Lagerintelligens");
+    expect(about).toContain("Efterfrågeprognoser");
+    expect(about).toContain("Inköpsoptimering");
+    expect(about).toContain("Leverantörsanalys");
+    expect(about).toContain("Digital lagervärld");
+    expect(about).toContain("Scenarier och simulering");
+    expect(about).toContain("Mohammad Al Kakouni");
+    expect(about).toContain('href="https://www.linkedin.com/in/mohammad-al-kakouni"');
+    expect(about).toContain('aria-label="Besök Mohammad Al Kakounis LinkedIn-profil"');
+    expect(about).toContain('href="https://www.linkedin.com/company/stoqwise"');
+    expect(about).toContain('aria-label="Besök STOQWISE företagssida på LinkedIn"');
+    expect(about).toContain("STOQWISE på LinkedIn");
+    expect(about).toContain('class="footer-social" href="https://www.linkedin.com/company/stoqwise"');
+    expect(about).toContain('class="footer-social" href="https://www.linkedin.com/company/stoqwise" target="_blank" rel="noopener noreferrer" aria-label="Besök STOQWISE företagssida på LinkedIn"');
+    expect(about).toContain("STOQWISE. Understand your inventory. Make better decisions.");
+    expect(about).not.toContain("We turn inventory data into better decisions.");
+
+    const aboutEn = await (await fetch(`${BASE}/om-oss`, { headers: { cookie: "lr_lang=en" } })).text();
+    expect(aboutEn).toContain("We turn inventory data into better decisions.");
+    expect(aboutEn).toContain("Inventory intelligence");
+    expect(aboutEn).toContain("Demand forecasting");
+    expect(aboutEn).toContain("Purchasing optimisation");
+    expect(aboutEn).toContain("Supplier analysis");
+    expect(aboutEn).toContain("Digital inventory world");
+    expect(aboutEn).toContain("Scenarios and simulation");
+    expect(aboutEn).toContain("Visit Mohammad Al Kakouni");
+    expect(aboutEn).toContain("LinkedIn profile");
+    expect(aboutEn).toContain('aria-label="Visit the STOQWISE LinkedIn company page"');
+    expect(aboutEn).toContain("STOQWISE on LinkedIn");
+    expect(aboutEn).toContain('aria-label="Visit the STOQWISE LinkedIn company page"');
+    expect(aboutEn).not.toContain("Vi gör lagerdata till bättre beslut.");
+    expect(aboutEn).not.toContain("Grundare av STOQWISE");
 
     const contact = await (await fetch(`${BASE}/kontakt`, { headers: sv })).text();
     expect(contact).toContain("Prata med oss om ditt lager.");
@@ -611,7 +740,75 @@ describe("publik informationsstruktur", () => {
     const body = await res.text();
     expect(body).toContain("Mohammad Al Kakouni");
     expect(body).toContain("Lund University");
-    expect(body).toContain("Better inventory");
+    expect(body).toContain("STOQWISE. Understand your inventory. Make better decisions.");
     expect(body).toContain('href="/om-oss"');
+  });
+
+  test("robots.txt och sitemap.xml beskriver den publika ytan", async () => {
+    const robots = await fetch(`${BASE}/robots.txt`);
+    expect(robots.status).toBe(200);
+    expect(robots.headers.get("content-type")).toContain("text/plain");
+    const robotsBody = await robots.text();
+    expect(robotsBody).toContain("User-agent: *");
+    expect(robotsBody).toContain("Disallow: /app");
+    expect(robotsBody).toContain("Disallow: /admin");
+    expect(robotsBody).toContain(`Sitemap: ${BASE}/sitemap.xml`);
+
+    const sitemap = await fetch(`${BASE}/sitemap.xml`);
+    expect(sitemap.status).toBe(200);
+    expect(sitemap.headers.get("content-type")).toContain("xml");
+    const sitemapBody = await sitemap.text();
+    expect(sitemapBody).toContain("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">");
+    expect(sitemapBody).toContain(`<loc>${BASE}/</loc>`);
+    expect(sitemapBody).toContain(`<loc>${BASE}/om-oss</loc>`);
+    expect(sitemapBody).toContain(`<loc>${BASE}/priser</loc>`);
+    expect(sitemapBody).not.toContain("/app");
+  });
+
+  test("sitemap.xml får inga dubbla snedstreck när APP_ORIGIN slutar med snedstreck", () => {
+    const original = config.appOrigin;
+    const mutableConfig = config as { appOrigin: string };
+    try {
+      // Även flera avslutande snedstreck ska normaliseras bort i varje <loc>.
+      for (const suffix of ["/", "//", "///"]) {
+        mutableConfig.appOrigin = `https://stoqwise.example${suffix}`;
+        const locs = [...sitemapXml().matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]!);
+        expect(locs).toHaveLength(PUBLIC_PAGES.length);
+        locs.forEach((loc, index) => {
+          expect(loc).toBe(`https://stoqwise.example${PUBLIC_PAGES[index]}`);
+          expect(loc.slice("https://".length)).not.toContain("//");
+        });
+      }
+    } finally {
+      mutableConfig.appOrigin = original;
+    }
+  });
+
+  test("publika sidor pekar ut en enda kanonisk adress", async () => {
+    for (const path of ["/", "/om-oss", "/priser", "/produkt?miljo=industri"]) {
+      const response = await fetch(`${BASE}${path}`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const clean = path.split("?")[0]!;
+      const expected = `${BASE}${clean === "/" ? "/" : clean}`;
+      expect(html).toContain(`<link rel="canonical" href="${expected}">`);
+      expect(html).toContain(`<meta property="og:url" content="${expected}">`);
+      expect(html).toContain(`<meta property="og:image" content="${BASE}/brand/stoqwise-og.png">`);
+      expect(html).toContain('<meta property="og:image:width" content="1200">');
+      expect(html).not.toContain('content="noindex');
+    }
+
+    const card = await fetch(`${BASE}/brand/stoqwise-og.png`);
+    expect(card.status).toBe(200);
+    expect(card.headers.get("content-type")).toContain("image/png");
+  });
+
+  test("fel- och inloggningssidor indexeras inte", async () => {
+    for (const path of ["/404", "/logga-in"]) {
+      const response = await fetch(`${BASE}${path}`);
+      const html = await response.text();
+      expect(html).toContain('<meta name="robots" content="noindex, follow">');
+      expect(html).not.toContain('<link rel="canonical"');
+    }
   });
 });
