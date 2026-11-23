@@ -804,6 +804,25 @@ describe("publik informationsstruktur", () => {
     expect(sitemapBody).not.toContain("/app");
   });
 
+  test("varje adress i sitemap.xml serverar ett dokument utan omdirigering", async () => {
+    // sitemapXml() bygger sina adresser från config.appOrigin. Peka om den
+    // till testservern så att <loc> verkligen kan hämtas härifrån.
+    const original = config.appOrigin;
+    const mutableConfig = config as { appOrigin: string };
+    mutableConfig.appOrigin = BASE;
+    try {
+      const locs = [...sitemapXml().matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]!);
+      expect(locs.length).toBe(PUBLIC_PAGES.length);
+      for (const loc of locs) {
+        // Utan redirect: manual hade en 301 till /kom-igang setts som 200.
+        const res = await fetch(loc, { redirect: "manual" });
+        expect(res.status).toBe(200);
+      }
+    } finally {
+      mutableConfig.appOrigin = original;
+    }
+  });
+
   test("sitemap.xml får inga dubbla snedstreck när APP_ORIGIN slutar med snedstreck", () => {
     const original = config.appOrigin;
     const mutableConfig = config as { appOrigin: string };
