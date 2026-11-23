@@ -740,6 +740,17 @@ describe("språkval och valuta", () => {
     expect(html).not.toContain("Demo data ·");
     expect(html).toContain('dir="ltr"');
   });
+
+  test("publika sidor sätter html-lang efter språkcookien", async () => {
+    for (const [cookie, lang] of [["lr_lang=sv", "sv"], ["lr_lang=en", "en"]] as const) {
+      for (const path of ["/", "/produkt", "/priser", "/om-oss", "/kontakt"]) {
+        const res = await fetch(`${BASE}${path}`, { headers: { cookie } });
+        expect(res.status).toBe(200);
+        const html = await res.text();
+        expect(html).toContain(`<html lang="${lang}"`);
+      }
+    }
+  });
 });
 
 describe("publik informationsstruktur", () => {
