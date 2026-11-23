@@ -102,6 +102,15 @@ async function smoke(): Promise<StepResult> {
         break;
       }
     }
+
+    // En medvetet okänd sökväg ska ge 404 — fångar en trasig felhanterare.
+    const missingPath = "/finns-inte";
+    const missing = await fetch(`${base}${missingPath}`);
+    checks.push(`${missingPath}=${missing.status} (väntar 404)`);
+    if (missing.status !== 404) {
+      ok = false;
+      checks.push("felhanteraren returnerade inte 404 för okänd sökväg");
+    }
   } catch (error) {
     ok = false;
     checks.push(`fel: ${error instanceof Error ? error.message : String(error)}`);
