@@ -12,7 +12,7 @@ import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { demoCsv, buildDemoDataset } from "../src/demo.ts";
 import { config } from "../src/config.ts";
-import { PUBLIC_PAGES, sitemapXml } from "../src/seo.ts";
+import { PUBLIC_PAGES, isIndexable, robotsTxt, sitemapXml } from "../src/seo.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const PORT = 3987;
@@ -763,6 +763,11 @@ describe("publik informationsstruktur", () => {
   test("utvecklardokumentationen kräver inloggning", async () => {
     const res = await fetch(`${BASE}/utvecklare`, { redirect: "manual" });
     expect([302, 303]).toContain(res.status);
+  });
+
+  test("utvecklardokumentationen är inte indexerbar", () => {
+    expect(isIndexable("/utvecklare")).toBe(false);
+    expect(robotsTxt()).toContain("Disallow: /utvecklare");
   });
 
   test("publika sidor bär inget gammalt varumärke", async () => {    for (const path of ["/", "/produkt", "/priser", "/kom-igang", "/hjalp", "/om-oss"]) {
