@@ -132,6 +132,34 @@ describe("publika sidor", () => {
     }
   });
 
+  test("sidfoten på startsidan har fyra kolumnrubrikerna och länkarna", async () => {
+    for (const [cookie, rubriker] of [
+      ["lr_lang=sv", ["Plattformen", "Resurser", "Företag"]],
+      ["lr_lang=en", ["Platform", "Resources", "Company"]],
+    ] as const) {
+      const html = await (await fetch(`${BASE}/`, { headers: { cookie } })).text();
+      const sidfot = html.match(/<footer class="site-footer">[\s\S]*?<\/footer>/)?.[0];
+      expect(sidfot).toBeTruthy();
+
+      // Fyra kolumner: varumärket samt rubrikerna produkt, resurser och företag.
+      expect(sidfot).toContain('<a class="site-brand" href="/">');
+      for (const rubrik of rubriker) expect(sidfot).toContain(`<h4>${rubrik}</h4>`);
+
+      // Länkarna som ska finnas i sidfoten.
+      for (const href of [
+        "/dokumentation",
+        "/hjalp",
+        "/kom-igang",
+        "/om-oss",
+        "/kontakt",
+        "/integritet",
+        "/villkor",
+      ]) {
+        expect(sidfot).toContain(`href="${href}"`);
+      }
+    }
+  });
+
   test("interaktiva demon är stängd för allmänheten", async () => {
     const res = await fetch(`${BASE}/demo`, { redirect: "manual" });
     expect(res.status).toBe(301);
