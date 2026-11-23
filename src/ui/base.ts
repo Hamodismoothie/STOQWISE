@@ -2,16 +2,27 @@
  * Design system: shell, navigation and primitives.
  *
  * Nordic Intelligence: pine navigation, warm paper surfaces, deep-teal
- * actions and a single copper signal. Newsreader carries the editorial voice,
- * Schibsted Grotesk the interface and IBM Plex Mono the technical values.
+ * actions and a single copper signal. Geist Sans carries the interface and
+ * Geist Mono the technical identifiers.
  * Everything is server-rendered so it works without JavaScript; the script
  * only adds motion, menus and view switching.
  */
 import type { Role } from "../data/repo.ts";
 import { can, limitsFor } from "../data/repo.ts";
 import { DEFAULT_LOCALE, LOCALES, dirFor, localeInfo, strings, type Locale } from "../i18n.ts";
-import { appText } from "../i18n-app.ts";
+import { appDate, appText } from "../i18n-app.ts";
 import { searchExamples } from "../terminology.ts";
+import { OG_IMAGE_PATH, absoluteUrl, isIndexable, structuredDataJsonLd } from "../seo.ts";
+import { fieldValues } from "../admin/store.ts";
+import { previewMode } from "../admin/preview.ts";
+import { trialState } from "../trial-state.ts";
+
+/**
+ * CMS text. Published value for the key when set, otherwise the copy that ships
+ * with the code, so a fresh install renders exactly as before.
+ */
+export const cmsText = (locale: Locale, key: string, fallback: string): string =>
+  fieldValues("site", locale, previewMode())[key] ?? fallback;
 
 export const esc = (value: unknown): string =>
   String(value ?? "")
@@ -89,12 +100,18 @@ const ICONS: Record<string, string> = {
   download: `<path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/>`,
   filter: `<path d="M3 5h18l-7 8v6l-4 2v-8L3 5Z"/>`,
   play: `<path d="M7 4l13 8-13 8V4Z"/>`,
+  reset: `<path d="M3 12a9 9 0 1 0 3.2-6.9"/><path d="M3 4v5h5"/>`,
+  pause: `<rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/>`,
   menu: `<path d="M4 7h16M4 12h16M4 17h16"/>`,
   panel: `<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>`,
   help: `<circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1.1 1-1.1 1.8"/><path d="M12 17h.01"/>`,
   bolt: `<path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/>`,
   close: `<path d="M6 6l12 12M18 6 6 18"/>`,
 };
+
+const LINKEDIN_URL = "https://www.linkedin.com/company/stoqwise";
+
+const linkedinMark = `<svg class="icon icon-linkedin" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20.45 20.45h-3.56v-5.57c0-1.33-.03-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.45v6.29zM5.34 7.43a2.07 2.07 0 1 1 0-4.13 2.07 2.07 0 0 1 0 4.13zM7.12 20.45H3.55V9h3.57v11.45z"/></svg>`;
 
 export function icon(name: string, size = 18, className = ""): string {
   return `<svg class="icon ${className}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] ?? ICONS.grid}</svg>`;
@@ -111,6 +128,7 @@ export interface ShellUser {
 export interface ShellOrg {
   name: string;
   plan: string;
+  trial_ends_at?: string | null;
 }
 
 export interface ShellOptions {
@@ -133,6 +151,7 @@ export interface ShellOptions {
 const NAV: Array<{ key: string; group: string; href: string; label: string; folio: string; icon: string; permission: "data.read" | "data.write" | "copilot.use" | "api.manage" | "org.manage" }> = [
   { key: "dashboard", group: "Analys", href: "/app", label: "Översikt", folio: "01", icon: "grid", permission: "data.read" as const },
   { key: "items", group: "Analys", href: "/app/artiklar", label: "Lager", folio: "02", icon: "layers", permission: "data.read" as const },
+  { key: "world", group: "Analys", href: "/app/lagervarld", label: "Lagervärld", folio: "02b", icon: "radar", permission: "data.read" as const },
   { key: "forecast", group: "Analys", href: "/app/prognos", label: "Efterfrågan", folio: "03", icon: "trend", permission: "data.read" as const },
   { key: "procurement", group: "Analys", href: "/app/inkop", label: "Inköp", folio: "03b", icon: "box", permission: "data.read" as const },
   { key: "simulate", group: "Analys", href: "/app/simulering", label: "Optimering", folio: "04", icon: "sliders", permission: "data.read" as const },
@@ -166,8 +185,20 @@ export const brandLockup = (variant: "horizontal" | "stacked" = "horizontal", cl
 
 export function shell(options: ShellOptions): string {
   const locale = options.locale ?? DEFAULT_LOCALE;
-  const t = (source: string): string => appText(locale, source);
+  const t = (source: string, vars?: Record<string, string | number>): string => appText(locale, source, vars);
   const limits = limitsFor(options.org.plan);
+  const trial = trialState(options.org);
+  const trialBanner = trial.isTrial && trial.endsAt
+    ? trial.ended
+      ? alert(
+          `<strong>${t("Provperioden har tagit slut.")}</strong> ${t("Organisationen är i läsbart läge. All data finns kvar och kan läsas eller exporteras.")} <a href="/app/export">${t("Exportera")}</a> · <a href="/app/prisestimat">${t("Begär offert")}</a> ${t("för att fortsätta.")} <a href="/app/abonnemang#provperiod">${t("Läs mer")}</a>`,
+          "warn",
+        )
+      : alert(
+          `<strong>${trial.daysLeft <= 1 ? t("Sista dagen av provperioden.") : t("Provperiod: {n} dagar kvar.", { n: trial.daysLeft })}</strong> ${t("Provperioden slutar {date}.", { date: appDate(locale, trial.endsAt) })} <a href="/app/prisestimat">${t("Begär offert")}</a> ${t("för att fortsätta efteråt.")} <a href="/app/abonnemang#provperiod">${t("Läs mer")}</a>`,
+          trial.daysLeft <= 3 ? "warn" : "info",
+        )
+    : "";
   let lastGroup = "";
   const nav = NAV.filter((item) => can(options.role, item.permission))
     .map((item) => {
@@ -187,11 +218,12 @@ export function shell(options: ShellOptions): string {
 <title>${esc(options.title)} · STOQWISE</title>
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0e1a18">
-<link rel="preload" href="/fonts/instrument-sans-latin-var.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/fonts/jetbrains-mono-latin-var.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/v3.css?v=101">
+<link rel="preload" href="/fonts/geist-sans-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/geist-sans-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/geist-mono-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/v3.css?v=143">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<script src="/v3.js?v=54" defer></script>
+<script src="/v3.js?v=81" defer></script>
 </head>
 <body class="app-body">
 <a class="skip" href="#main">${t("Hoppa till innehåll")}</a>
@@ -201,7 +233,8 @@ export function shell(options: ShellOptions): string {
     <nav class="rail-nav">${nav}</nav>
     <div class="rail-foot">
       <button class="rail-link" type="button" data-command-open aria-label="${t("Sök (⌘K)")}" data-folio="⌘">${icon("search", 16)}<span>${t("Sök")}</span></button>
-      <button class="rail-link" type="button" data-theme-toggle aria-label="${t("Byt tema")}" data-folio="◐">${icon("moon", 16)}<span>${t("Tema")}</span></button>
+      <button class="rail-link" type="button" data-theme-toggle aria-label="${t("Byt tema")}" data-theme-light-label="${t("Byt till ljust tema")}" data-theme-dark-label="${t("Byt till mörkt tema")}" data-folio="◐">${icon("moon", 16)}<span>${t("Tema")}</span></button>
+      <button class="rail-link" type="button" data-motion-toggle aria-pressed="false" data-motion-off-label="${t("Rörelse: pausa animationer")}" data-motion-on-label="${t("Rörelse av: aktivera animationer")}" data-motion-off-text="${t("Rörelse")}" data-motion-on-text="${t("Rörelse av")}" data-folio="Ⅱ">${icon("pause", 16)}<span>${t("Rörelse")}</span></button>
       <form method="post" action="/logga-ut" class="rail-form">
         <button class="rail-link" type="submit" data-folio="→"><span>${t("Logga ut")}</span></button>
       </form>
@@ -242,6 +275,7 @@ export function shell(options: ShellOptions): string {
         </div>
         ${options.actions ? `<div class="page-actions">${options.actions}</div>` : ""}
       </div>`}
+      ${trialBanner}
       ${options.toolbar ?? ""}
       ${options.content}
     </main>
@@ -348,13 +382,21 @@ export function table(input: {
   columns: Array<{ key: string; label: string; align?: "left" | "right"; sortable?: boolean; width?: string }>;
   rows: Array<Record<string, unknown>>;
   rowHref?: (row: Record<string, unknown>) => string;
+  /** Extra attributes (for example `data-sku`) for cross-highlighting. */
+  rowAttrs?: (row: Record<string, unknown>) => string;
   empty?: string;
   sortKey?: string;
   sortDir?: "asc" | "desc";
   baseQuery?: Record<string, string>;
   caption?: string;
+  locale?: Locale;
 }): string {
-  if (input.rows.length === 0) return emptyState(input.empty ?? "Inga rader matchar filtret.", "Prova att rensa filtret eller importera ny data.");
+  const locale = input.locale ?? DEFAULT_LOCALE;
+  if (input.rows.length === 0)
+    return emptyState(
+      input.empty ?? appText(locale, "Inga rader matchar filtret."),
+      appText(locale, "Prova att rensa filtret eller importera ny data."),
+    );
   const headers = input.columns
     .map((col) => {
       const isSorted = input.sortKey === col.key;
@@ -368,10 +410,11 @@ export function table(input: {
   const rows = input.rows
     .map((row) => {
       const cells = input.columns
-        .map((col) => `<td style="text-align:${col.align ?? "left"}" class="${col.align === "right" ? "num" : ""}">${row[col.key] ?? "–"}</td>`)
+        .map((col) => `<td style="text-align:${col.align ?? "left"}" class="${col.align === "right" ? "num" : ""}" data-label="${esc(col.label)}">${row[col.key] ?? "–"}</td>`)
         .join("");
       const href = input.rowHref?.(row);
-      return href ? `<tr class="row-link" data-href="${esc(href)}">${cells}</tr>` : `<tr>${cells}</tr>`;
+      const attrs = input.rowAttrs?.(row) ?? "";
+      return href ? `<tr class="row-link" ${attrs} data-href="${esc(href)}">${cells}</tr>` : `<tr ${attrs}>${cells}</tr>`;
     })
     .join("");
 
@@ -406,18 +449,20 @@ export function tabs(items: Array<{ label: string; href: string; active: boolean
     .join("")}</nav>`;
 }
 
-export function pagination(input: { page: number; pages: number; baseQuery: Record<string, string> }): string {
+export function pagination(input: { page: number; pages: number; baseQuery: Record<string, string>; locale?: Locale }): string {
   if (input.pages <= 1) return "";
+  const locale = input.locale ?? DEFAULT_LOCALE;
+  const t = (source: string, vars?: Record<string, string | number>): string => appText(locale, source, vars);
   const link = (page: number, label: string, disabled = false): string => {
     const params = new URLSearchParams({ ...input.baseQuery, page: String(page) });
     return disabled
       ? `<span class="page-link is-disabled">${label}</span>`
       : `<a class="page-link" href="?${params.toString()}">${label}</a>`;
   };
-  return `<nav class="pagination" aria-label="Sidnavigering">
-    ${link(Math.max(1, input.page - 1), "← Föregående", input.page <= 1)}
-    <span class="page-status">Sida ${input.page} av ${input.pages}</span>
-    ${link(Math.min(input.pages, input.page + 1), "Nästa →", input.page >= input.pages)}
+  return `<nav class="pagination" aria-label="${esc(t("Sidnavigering"))}">
+    ${link(Math.max(1, input.page - 1), t("← Föregående"), input.page <= 1)}
+    <span class="page-status">${esc(t("Sida {page} av {pages}", { page: input.page, pages: input.pages }))}</span>
+    ${link(Math.min(input.pages, input.page + 1), t("Nästa →"), input.page >= input.pages)}
   </nav>`;
 }
 
@@ -447,6 +492,10 @@ export function marketingShell(input: {
   const dir = dirFor(locale);
   const next = input.path ?? "/";
   const sv = locale === "sv";
+  // One address per page: the query string is a view, not a document.
+  const canonical = absoluteUrl(next);
+  const indexable = isIndexable(next);
+  const description = input.description ?? cmsText(locale, "site.meta.home.description", c.meta.description);
   const navCopy = sv
     ? {
         product: "Plattformen",
@@ -484,13 +533,13 @@ export function marketingShell(input: {
         resources: "Resources",
         about: "About",
         pricing: "Pricing",
-        demo: "Request a demo",
+        demo: "Book a demo",
         overview: "Platform overview",
         intelligence: "Inventory intelligence",
         forecasting: "Demand forecasting",
         optimization: "Inventory optimization",
         procurement: "Procurement intelligence",
-        insights: "AI insights",
+        insights: "AI Decision Support",
         capital: "Release tied-up capital",
         availability: "Prevent stockouts",
         purchasing: "Smarter purchasing",
@@ -535,18 +584,32 @@ export function marketingShell(input: {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(input.title)}</title>
-<meta name="description" content="${esc(input.description ?? c.meta.description)}">
+<meta name="description" content="${esc(description)}">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#f6f4ef">
+${indexable ? `<link rel="canonical" href="${esc(canonical)}">` : `<meta name="robots" content="noindex, follow">`}
+${indexable ? `<script type="application/ld+json">${structuredDataJsonLd()}</script>` : ""}
 <meta property="og:title" content="${esc(input.title)}">
 <meta property="og:type" content="website">
 <meta property="og:locale" content="${localeInfo(locale)?.ogLocale ?? "en_US"}">
-<link rel="preload" href="/fonts/instrument-sans-latin-var.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/fonts/jetbrains-mono-latin-var.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/fonts/newsreader-latin-400-italic.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/v3.css?v=101">
+<meta property="og:site_name" content="STOQWISE">
+<meta property="og:url" content="${esc(canonical)}">
+<meta property="og:description" content="${esc(description)}">
+<meta property="og:image" content="${esc(absoluteUrl(OG_IMAGE_PATH))}">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="STOQWISE">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${esc(input.title)}">
+<meta name="twitter:description" content="${esc(description)}">
+<meta name="twitter:image" content="${esc(absoluteUrl(OG_IMAGE_PATH))}">
+<link rel="preload" href="/fonts/geist-sans-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/geist-sans-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/geist-mono-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/v3.css?v=143">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<script src="/v3.js?v=54" defer></script>
+<script src="/v3.js?v=81" defer></script>
 </head>
 <body class="site-body">
 <a class="skip" href="#main">${c.nav.skip}</a>
@@ -561,7 +624,6 @@ export function marketingShell(input: {
     <div class="site-actions">
       ${languageSwitcher(locale, next)}
       <a class="site-signin" href="/logga-in">${c.nav.signIn}</a>
-      <a class="btn btn-ghost btn-sm" href="/kontakt?amne=demo">${navCopy.demo}</a>
       <a class="btn btn-sm" href="${input.user ? "/app" : "/skapa-konto"}">${input.user ? c.nav.openApp : c.nav.getStarted}</a>
     </div>
   </div>
@@ -571,15 +633,14 @@ export function marketingShell(input: {
   <div class="site-wrap footer-grid">
     <div class="footer-brand">
       <a class="site-brand" href="/">${brandLockup()}</a>
-      <p class="footer-claim">${c.footer.tagline}</p>
-      <p class="footer-note">${sv ? "Byggt i Sverige för internationella lagerteam." : "Built in Sweden for international inventory teams."}</p>
+      <p class="footer-claim">${esc(cmsText(locale, "site.footer.tagline", c.footer.tagline))}</p>
+      <p class="footer-note">${esc(cmsText(locale, "site.footer.note", sv ? "Byggt i Sverige för internationella lagerteam." : "Built in Sweden for international inventory teams."))}</p>
     </div>
-    <div><h4>${navCopy.product}</h4><a href="/produkt">${navCopy.overview}</a><a href="/#intelligence">${navCopy.intelligence}</a><a href="/#forecasting">${navCopy.forecasting}</a><a href="/#procurement">${navCopy.procurement}</a></div>
-    <div><h4>${navCopy.solutions}</h4><a href="/#how-it-works">${navCopy.capital}</a><a href="/produkt">${navCopy.optimization}</a><a href="/#industries">${navCopy.industries}</a><a href="/om-oss">${navCopy.security}</a></div>
+    <div><h4>${navCopy.product}</h4><a href="/produkt">${navCopy.overview}</a><a href="/#intelligence">${navCopy.intelligence}</a><a href="/#forecasting">${navCopy.forecasting}</a><a href="/priser">${navCopy.pricing}</a></div>
     <div><h4>${navCopy.resources}</h4><a href="/dokumentation">${navCopy.docs}</a><a href="/hjalp">${navCopy.help}</a><a href="/kom-igang">${navCopy.getStarted}</a><a href="/dokumentation">${navCopy.integrations}</a></div>
     <div><h4>${c.footer.company}</h4><a href="/om-oss">${c.footer.about}</a><a href="/kontakt">${c.footer.contact}</a><a href="/integritet">${c.footer.privacy}</a><a href="/villkor">${c.footer.terms}</a></div>
   </div>
-  <div class="site-wrap footer-bottom"><span>© ${new Date().getFullYear()} STOQWISE. ${c.footer.rights}</span></div>
+  <div class="site-wrap footer-bottom"><span>© ${new Date().getFullYear()} STOQWISE. ${esc(cmsText(locale, "site.footer.rights", c.footer.rights))}</span><a class="footer-social" href="${LINKEDIN_URL}" target="_blank" rel="noopener noreferrer" aria-label="${esc(c.footer.linkedinCompany)}">${linkedinMark}</a></div>
 </footer>
 </body>
 </html>`;

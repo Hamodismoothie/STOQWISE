@@ -831,6 +831,32 @@ describe("publik informationsstruktur", () => {
     expect(card.headers.get("content-type")).toContain("image/png");
   });
 
+  test("publika sidor bär strukturerad data för organisation och webbplats", async () => {
+    for (const path of ["/", "/om-oss", "/priser", "/produkt?miljo=industri"]) {
+      const response = await fetch(`${BASE}${path}`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const blocks = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)];
+      expect(blocks).toHaveLength(1);
+      const parsed = JSON.parse(blocks[0]![1]!) as {
+        "@context"?: string;
+        "@graph"?: Array<{ "@type"?: string; name?: string; url?: string; logo?: string }>;
+      };
+      const nodes = parsed["@graph"] ?? [];
+      expect(parsed["@context"]).toBe("https://schema.org");
+      const types = nodes.map((node) => node["@type"]);
+      expect(types).toContain("Organization");
+      expect(types).toContain("WebSite");
+      for (const node of nodes) {
+        // Samma adress som den kanoniska länken, byggd från absoluteUrl().
+        expect(node.url).toBe(`${BASE}/`);
+        expect(node.name).toBe("STOQWISE");
+      }
+      const organisation = nodes.find((node) => node["@type"] === "Organization");
+      expect(organisation?.logo).toBe(`${BASE}/brand/stoqwise-logo.svg`);
+    }
+  });
+
   test("fel- och inloggningssidor indexeras inte", async () => {
     for (const path of ["/404", "/logga-in"]) {
       const response = await fetch(`${BASE}${path}`);
