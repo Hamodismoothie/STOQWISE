@@ -210,11 +210,13 @@ export function shell(options: ShellOptions): string {
     })
     .join("");
 
+  // Den inloggade appen får inte indexeras ens om robots.txt ignoreras.
   return `<!doctype html>
 <html lang="${locale}" dir="${dirFor(locale)}" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, follow">
 <title>${esc(options.title)} · STOQWISE</title>
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0e1a18">

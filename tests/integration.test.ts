@@ -303,6 +303,14 @@ describe("konto och import", () => {
     expect(body).toContain("Ingen analys");
   });
 
+  test("inloggade appsidor indexeras inte", async () => {
+    const res = await fetch(`${BASE}/app`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<meta name="robots" content="noindex, follow">');
+    expect(html).not.toContain('<link rel="canonical"');
+  });
+
   test("uppladdning ger mappningssida med igenkända kolumner", async () => {
     const csv = demoCsv(buildDemoDataset());
     const data = new FormData();
