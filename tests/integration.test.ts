@@ -26,6 +26,11 @@ function cookieFrom(response: Response): string {
   return raw.split(";")[0] ?? "";
 }
 
+/** Meta description som marketingShell renderar, före HTML-avkodning. */
+function metaDescription(html: string): string {
+  return html.match(/<meta name="description" content="([^"]*)">/)?.[1] ?? "";
+}
+
 async function form(path: string, fields: Record<string, string>, cookie: string): Promise<Response> {
   return fetch(`${BASE}${path}`, {
     method: "POST",
@@ -129,6 +134,82 @@ describe("publika sidor", () => {
       const body = await res.text();
       expect(body.toLowerCase()).toContain("stoqwise");
       expect(body).toContain("/brand/stoqwise-logo.svg");
+    }
+  });
+
+  test("de fem publika sidorna har varsin meta description", async () => {
+    const forvantat = {
+      sv: {
+        "/": "bundet kapital",
+        "/priser": "Inga fasta paketpriser",
+        "/kontakt": "Beskriv situationen kort",
+        "/kom-igang": "skapa konto, importera lagerdata",
+        "/om-oss": "samlar analys, prognoser och inköp",
+      },
+      en: {
+        "/": "tied-up capital",
+        "/priser": "No fixed package prices",
+        "/kontakt": "Describe the situation briefly",
+        "/kom-igang": "create an account, import inventory data",
+        "/om-oss": "brings inventory analysis, forecasting and purchasing",
+      },
+    };
+    for (const [sprak, cookie] of [["sv", "lr_lang=sv"], ["en", "lr_lang=en"]] as const) {
+      const beskrivningar: string[] = [];
+      for (const [path, fras] of Object.entries(forvantat[sprak])) {
+        const html = await (await fetch(`${BASE}${path}`, { headers: { cookie } })).text();
+        const beskrivning = metaDescription(html);
+        expect(beskrivning.length).toBeGreaterThan(0);
+        expect(beskrivning).toContain(fras);
+        beskrivningar.push(beskrivning);
+      }
+      // Ingen sida får låna någon annans sökbeskrivning.
+      expect(new Set(beskrivningar).size).toBe(beskrivningar.length);
+    }
+  });
+
+  test("CMS-fält för meta description läses av rätt sida", async () => {
+    const override = {
+      "site.meta.pricing.description": "CMS-prisbeskrivning",
+      "site.meta.contact.description": "CMS-kontaktbeskrivning",
+      "site.meta.start.description": "CMS-kom-igang-beskrivning",
+      "site.meta.about.description": "CMS-om-oss-beskrivning",
+    };
+    const store = new Database(DB);
+    try {
+      const skriv = store.query(
+        `INSERT INTO cms_fields (scope, key, locale, draft, published, updated_at, updated_by)
+         VALUES ('site', $key, 'sv', NULL, $value, $now, NULL)
+         ON CONFLICT(scope, key, locale) DO UPDATE SET published = excluded.published, updated_at = excluded.updated_at`,
+      );
+      const nu = new Date().toISOString();
+      for (const [key, value] of Object.entries(override)) skriv.run({ $key: key, $value: value, $now: nu });
+
+      // Innehållet cacheas 1,5 s i serverprocessen; poll:a tills publiceringen syns.
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const html = await (await fetch(`${BASE}/priser`, { headers: { cookie: "lr_lang=sv" } })).text();
+        if (metaDescription(html) === override["site.meta.pricing.description"]) break;
+        await Bun.sleep(200);
+      }
+
+      for (const [path, key] of [
+        ["/priser", "site.meta.pricing.description"],
+        ["/kontakt", "site.meta.contact.description"],
+        ["/kom-igang", "site.meta.start.description"],
+      ] as const) {
+        const html = await (await fetch(`${BASE}${path}`, { headers: { cookie: "lr_lang=sv" } })).text();
+        expect(metaDescription(html)).toBe(override[key]);
+      }
+
+      // Startsidan ska inte påverkas av redaktionens sidspecifika beskrivningar.
+      const home = await (await fetch(`${BASE}/`, { headers: { cookie: "lr_lang=sv" } })).text();
+      expect(metaDescription(home)).not.toContain("CMS-");
+    } finally {
+      for (const key of Object.keys(override)) {
+        store.query("DELETE FROM cms_fields WHERE scope = 'site' AND locale = 'sv' AND key = $key").run({ $key: key });
+      }
+      store.close();
     }
   });
 
