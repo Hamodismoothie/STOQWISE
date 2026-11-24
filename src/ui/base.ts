@@ -621,10 +621,10 @@ ${indexable ? `<script type="application/ld+json">${structuredDataJsonLd()}</scr
     <nav class="site-nav" aria-label="${c.nav.menu}">${nav}</nav>
     <details class="site-menu">
       <summary aria-label="${c.nav.menu}"><span>${c.nav.menu}</span></summary>
-      <div class="site-menu-panel">${mobileNav}<div class="site-menu-actions">${languageSwitcher(locale, next)}<a class="btn btn-ghost" href="/kontakt?amne=demo">${navCopy.demo}</a>${input.user ? `<a class="btn" href="/app">${c.nav.openApp}</a>` : `<a class="btn btn-ghost" href="/logga-in">${c.nav.signIn}</a><a class="btn" href="/skapa-konto">${c.nav.getStarted}</a>`}</div></div>
+      <div class="site-menu-panel">${mobileNav}<div class="site-menu-actions">${languageSwitcher(locale, next, "site-menu-lang")}<a class="btn btn-ghost" href="/kontakt?amne=demo">${navCopy.demo}</a>${input.user ? `<a class="btn" href="/app">${c.nav.openApp}</a>` : `<a class="btn btn-ghost" href="/logga-in">${c.nav.signIn}</a><a class="btn" href="/skapa-konto">${c.nav.getStarted}</a>`}</div></div>
     </details>
     <div class="site-actions">
-      ${languageSwitcher(locale, next)}
+      ${languageSwitcher(locale, next, "site-actions-lang")}
       <a class="site-signin" href="/logga-in">${c.nav.signIn}</a>
       <a class="btn btn-sm" href="${input.user ? "/app" : "/skapa-konto"}">${input.user ? c.nav.openApp : c.nav.getStarted}</a>
     </div>
@@ -649,14 +649,27 @@ ${indexable ? `<script type="application/ld+json">${structuredDataJsonLd()}</scr
 }
 
 /**
- * Language picker. A plain GET form so it works without JavaScript; the small
- * script in v3.js submits it when the selection changes.
+ * Deterministiskt id: samma argument ger alltid samma id, oavsett hur många
+ * sidor som renderats tidigare. Klassnamnet skiljer mobilens språkväljare
+ * från desktopens på samma sida.
  */
-let langSwitchSeq = 0;
+function languageSwitcherId(locale: Locale, next: string, className: string): string {
+  const källa = `${locale}|${next}|${className}`;
+  let hash = 2166136261; // FNV-1a, 32 bitar
+  for (let i = 0; i < källa.length; i++) {
+    hash ^= källa.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `lang-${locale}-${(hash >>> 0).toString(36)}`;
+}
 
+/**
+ * Språkväljaren är ett vanligt GET-formulär så att den fungerar utan
+ * JavaScript; lilla skriptet i v3.js lämnar in det när valet ändras.
+ */
 export function languageSwitcher(locale: Locale, next: string, className = ""): string {
   const c = strings(locale);
-  const fieldId = `lang-${locale}-${++langSwitchSeq}`;
+  const fieldId = languageSwitcherId(locale, next, className);
   const options = LOCALES.filter((l) => l.available)
     .map((l) => `<option value="${l.code}"${l.code === locale ? " selected" : ""} lang="${l.code}">${l.nativeName}</option>`)
     .join("");

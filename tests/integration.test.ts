@@ -31,6 +31,11 @@ function metaDescription(html: string): string {
   return html.match(/<meta name="description" content="([^"]*)">/)?.[1] ?? "";
 }
 
+/** Språkväljarnas select-id:n i en renderad sida, i DOM-ordning. */
+function languageSwitchIds(html: string): string[] {
+  return Array.from(html.matchAll(/<select id="(lang-[^"]+)" name="lang"/g), (match) => match[1] ?? "");
+}
+
 async function form(path: string, fields: Record<string, string>, cookie: string): Promise<Response> {
   return fetch(`${BASE}${path}`, {
     method: "POST",
@@ -390,6 +395,13 @@ describe("konto och import", () => {
     const html = await res.text();
     expect(html).toContain('<meta name="robots" content="noindex, follow">');
     expect(html).not.toContain('<link rel="canonical"');
+  });
+
+  test("appens språkväljare har samma id mellan requests", async () => {
+    const första = languageSwitchIds(await (await fetch(`${BASE}/app`, { headers: { cookie } })).text());
+    const andra = languageSwitchIds(await (await fetch(`${BASE}/app`, { headers: { cookie } })).text());
+    expect(första.length).toBe(1);
+    expect(andra).toEqual(första);
   });
 
   test("uppladdning ger mappningssida med igenkända kolumner", async () => {
@@ -839,6 +851,27 @@ describe("språkval och valuta", () => {
         expect(html).toContain(`<html lang="${lang}"`);
       }
     }
+  });
+});
+
+describe("språkväljarens id:n", () => {
+  test("samma sida ger samma id mellan requests", async () => {
+    for (const cookie of ["lr_lang=sv", "lr_lang=en"]) {
+      const förstaHtml = await (await fetch(`${BASE}/`, { headers: { cookie } })).text();
+      const andraHtml = await (await fetch(`${BASE}/`, { headers: { cookie } })).text();
+      const första = languageSwitchIds(förstaHtml);
+      expect(första.length).toBe(2);
+      expect(languageSwitchIds(andraHtml)).toEqual(första);
+    }
+  });
+
+  test("mobil och desktop får olika id på samma sida", async () => {
+    const html = await (await fetch(`${BASE}/priser`)).text();
+    const ids = languageSwitchIds(html);
+    expect(ids.length).toBe(2);
+    expect(ids[0]).not.toBe(ids[1]);
+    // Varje etikett pekar på sitt eget select-fält.
+    for (const id of ids) expect(html).toContain(`<label class="sr-only" for="${id}">`);
   });
 });
 
