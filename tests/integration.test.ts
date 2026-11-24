@@ -246,6 +246,19 @@ describe("publika sidor", () => {
     }
   });
 
+  test("aktuell sida markeras med aria-current i den publika navigeringen", async () => {
+    for (const path of ["/priser", "/om-oss", "/produkt"]) {
+      const html = await (await fetch(`${BASE}${path}`)).text();
+      const nav = html.match(/<nav class="site-nav"[\s\S]*?<\/nav>/)?.[0];
+      expect(nav).toBeTruthy();
+
+      // Endast länken till den egna sidan får markeringen.
+      const markerade = Array.from(nav!.matchAll(/<a\b[^>]*aria-current="page"[^>]*>/g), (match) => match[0]);
+      expect(markerade).toHaveLength(1);
+      expect(markerade[0]).toContain(`href="${path}"`);
+    }
+  });
+
   test("interaktiva demon är stängd för allmänheten", async () => {
     const res = await fetch(`${BASE}/demo`, { redirect: "manual" });
     expect(res.status).toBe(301);

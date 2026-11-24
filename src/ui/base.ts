@@ -555,11 +555,13 @@ export function marketingShell(input: {
         integrations: "Integrations",
         security: "Security",
       };
-  const menuLink = (href: string, label: string) => `<a href="${href}">${label}</a>`;
+  // Aktuell sida i den publika navigeringen markeras som i appens navigering.
+  const menuLink = (href: string, label: string, current = false) =>
+    `<a href="${href}"${current ? ' aria-current="page"' : ""}>${label}</a>`;
   const nav = `<details class="nav-menu ${input.active === "product" ? "is-active" : ""}">
       <summary>${navCopy.platform}${icon("chevron", 14, "nav-chevron")}</summary>
       <div class="nav-panel nav-panel-wide">
-        <div><p class="nav-kicker">${navCopy.platform}</p>${menuLink("/produkt", navCopy.overview)}${menuLink("/#platform", sv ? "Produktdemonstration" : "Product demo")}${menuLink("/#intelligence", navCopy.intelligence)}${menuLink("/#forecasting", navCopy.forecasting)}</div>
+        <div><p class="nav-kicker">${navCopy.platform}</p>${menuLink("/produkt", navCopy.overview, input.active === "product")}${menuLink("/#platform", sv ? "Produktdemonstration" : "Product demo")}${menuLink("/#intelligence", navCopy.intelligence)}${menuLink("/#forecasting", navCopy.forecasting)}</div>
         <div><p class="nav-kicker">${sv ? "Beslutsstöd" : "Decision support"}</p>${menuLink("/produkt", navCopy.optimization)}${menuLink("/#procurement", navCopy.procurement)}${menuLink("/dokumentation", navCopy.integrations)}</div>
       </div>
     </details>
@@ -571,8 +573,8 @@ export function marketingShell(input: {
       <summary>${navCopy.resources}${icon("chevron", 14, "nav-chevron")}</summary>
       <div class="nav-panel">${menuLink("/dokumentation", navCopy.docs)}${menuLink("/hjalp", navCopy.help)}${menuLink("/kom-igang", navCopy.getStarted)}${menuLink("/exempelrapport.pdf?miljo=industri", sv ? "Exempelrapport" : "Sample report")}</div>
     </details>
-    <a class="nav-link" href="/priser">${navCopy.pricing}</a>
-    <a class="nav-link ${input.active === "about" ? "is-active" : ""}" href="/om-oss">${navCopy.about}</a>`;
+    <a class="nav-link ${input.active === "pricing" ? "is-active" : ""}" href="/priser"${input.active === "pricing" ? ' aria-current="page"' : ""}>${navCopy.pricing}</a>
+    <a class="nav-link ${input.active === "about" ? "is-active" : ""}" href="/om-oss"${input.active === "about" ? ' aria-current="page"' : ""}>${navCopy.about}</a>`;
   const mobileNav = `<div class="site-menu-groups">
     <div><p>${navCopy.platform}</p>${menuLink("/produkt", navCopy.overview)}${menuLink("/#intelligence", navCopy.intelligence)}${menuLink("/#forecasting", navCopy.forecasting)}${menuLink("/produkt", navCopy.optimization)}${menuLink("/#procurement", navCopy.procurement)}</div>
     <div><p>${navCopy.industries}</p>${menuLink("/#industries", navCopy.industries)}</div>
