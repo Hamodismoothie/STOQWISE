@@ -11,14 +11,36 @@ som är nästa prioritering. Det ersätter inte `AGENTS.md`, som är bindande.
 | Kontroll | Resultat |
 |---|---|
 | `bun run typecheck` | 0 fel |
-| `bun test` | 485 godkända, 1 överhoppad, 0 fel (486 tester, 42 filer) |
+| `bun test` | 494 godkända, 1 överhoppad, 0 fel (495 tester, 42 filer) |
 | `bun scripts/autopilot.ts` | typkontroll + tester + smoke: alla gröna |
 | `bun scripts/link-check.ts` | 25 publika sidor, 0 trasiga länkar |
 | launchd `ai.stoqwise.worker` | `state = running`, hjärtslag var 30:e minut, kraschåterstart verifierad |
-| Utvecklingsslingan | 13 uppgifter genomförda, verifierade och committade av agenten själv |
-| Självåterhämtning | 12 kontrollerade felscenarier i `tests/agent-recovery.test.ts` |
+| Utvecklingsslingan | 14 uppgifter genomförda, verifierade och committade |
+| Självåterhämtning | 20 kontrollerade felscenarier i `tests/agent-recovery.test.ts` |
+| Backloggen | 115 uppgifter: 14 klara, 2 blockerade, 97 väntande — alla väntande med körbart `verify` |
 
 Smoke-steget kontrollerar nu även `/priser`, `/produkt` och `/kontakt`.
+
+## Fas 0 — reparerad arbetskedja (2026-11-25)
+
+Godkänd av ägaren och genomförd. Inga ändringar i affärslogik, datamodeller,
+priser, behörigheter eller produktionsdata; ingen deploy och ingen push.
+
+| Problem | Åtgärd |
+|---|---|
+| `accept`-texten kördes som ett program ("GET /perf.js …" → `Executable not found: GET`) | `verify` (kommando) skilt från `acceptance` (prosa). Prosa blir en synlig check, aldrig ett kastat fel |
+| Krasch i `run()` dödade en färdig uppgift | saknad körbar fil blir en misslyckad check i stället för ett undantag |
+| Uppgifter utan körbart kriterium kunde köras ändå | 97 av 97 väntande har `verify`; 2 är `manual` (d3-04, qa-08) och väljs aldrig |
+| Ingen strukturkontroll av kön | `bun scripts/backlog-lint.ts`; fel stoppar cykeln före ett modellanrop, varningar loggas |
+| Ingen låsning av att motorn inte kan skrivas | test som kräver att `scripts/dev-agent.ts`, `docs/backlog.json` och `data/` nekas |
+
+`d3-02` var i praktiken färdig: arbetarens avbrutna försök 00:24–00:32 fälldes av
+accept-körningen, inte av koden. Ändringen verifierades manuellt och committades
+separat; testsiffran steg från 487 till 494 med det test försöket skrev.
+
+Verifierat efter ändringen: `bun run typecheck` 0 fel · `bun test` 494 godkända /
+1 överhoppad / 0 fel (495 tester, 42 filer) · `bun scripts/backlog-lint.ts`
+giltig · `bun scripts/autopilot.ts --quick` alla steg gröna.
 
 ## Så fungerar den autonoma slingan
 

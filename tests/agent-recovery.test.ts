@@ -12,19 +12,101 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  allowed,
   blockedNote,
   classifyErrorText,
   classifyFailure,
   excerptFailure,
+  lintBacklog,
   nextModel,
+  nextPending,
   nextStrategy,
+  planAcceptance,
   quarantineDuplicates,
   restoreAttempt,
   snapshotAvailable,
   strategiesFor,
   takeSnapshot,
+  type Backlog,
   type FailureKind,
+  type Task,
 } from "../scripts/dev-agent.ts";
+import { extractCommand } from "../scripts/backlog-verify.ts";
+
+describe("acceptanskriterier", () => {
+  const task = (patch: Partial<Task>): Task => ({ id: "t-1", title: "t", brief: "", priority: 1, status: "pending", ...patch });
+
+  test("en uppgift med enbart prosa körs aldrig som kommando", () => {
+    // Regression: this exact shape ("GET /perf.js …") was executed as a program
+    // and killed an already finished task in cycles 61-62.
+    expect(planAcceptance(task({ accept: "GET /perf.js svarar 200 med text/javascript" }))).toEqual({
+      kind: "prose",
+      text: "GET /perf.js svarar 200 med text/javascript",
+    });
+  });
+
+  test("verify går före prosan och körs som kommando", () => {
+    expect(planAcceptance(task({ accept: "prosan", verify: "bun test tests/motion.test.ts" }))).toEqual({
+      kind: "command",
+      command: "bun test tests/motion.test.ts",
+    });
+  });
+
+  test("utan kriterium blir utfallet none", () => {
+    expect(planAcceptance(task({})).kind).toBe("none");
+  });
+
+  test("kommandot extraheras ur prosan utan att ta med meningen", () => {
+    expect(extractCommand("bunx playwright test e2e/perf.spec.ts --workers=1: inga frames")).toBe(
+      "bunx playwright test e2e/perf.spec.ts --workers=1",
+    );
+    expect(extractCommand("bun test tests/app-world.test.ts för 1999, 2000 och 2001 artiklar")).toBe(
+      "bun test tests/app-world.test.ts",
+    );
+    expect(extractCommand("GET /perf.js svarar 200")).toBeNull();
+    expect(extractCommand("En injicerad serie om 126 frames à 30 ms")).toBeNull();
+  });
+});
+
+describe("urval, grindar och backlogg", () => {
+  test("manuella uppgifter väljs aldrig", () => {
+    const backlog: Backlog = {
+      tasks: [
+        { id: "a", title: "a", brief: "", priority: 1, status: "pending", manual: true },
+        { id: "b", title: "b", brief: "", priority: 5, status: "pending" },
+        { id: "c", title: "c", brief: "", priority: 9, status: "done" },
+      ],
+    };
+    expect(nextPending(backlog)?.id).toBe("b");
+  });
+
+  test("motorn, backloggen och data kan inte skrivas av agenten", () => {
+    expect(allowed("scripts/dev-agent.ts")).toBe(false);
+    expect(allowed("docs/backlog.json")).toBe(false);
+    expect(allowed("data/lagerradar.db")).toBe(false);
+    expect(allowed("src/server.ts")).toBe(true);
+  });
+
+  test("linten fäller strukturella fel", () => {
+    const backlog: Backlog = {
+      tasks: [
+        { id: "d", title: "d", brief: "", priority: 1, status: "pending" },
+        { id: "d", title: "", brief: "", priority: 2, status: "pending" },
+      ],
+    };
+    const lint = lintBacklog(backlog);
+    expect(lint.errors.some((error) => error.includes("dublett-id d"))).toBe(true);
+    expect(lint.errors.some((error) => error.includes("saknar title"))).toBe(true);
+  });
+
+  test("prosa är en varning, inte ett fel", () => {
+    const lint = lintBacklog({
+      tasks: [{ id: "e", title: "e", brief: "", priority: 1, status: "pending", accept: "text" }],
+    });
+    expect(lint.errors).toEqual([]);
+    expect(lint.unverifiable).toEqual(["e"]);
+  });
+});
 
 function makeRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "stoqwise-agent-"));

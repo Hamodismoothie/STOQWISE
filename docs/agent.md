@@ -26,7 +26,7 @@ launchd ai.stoqwise.worker
             │    ├─ hermes chat --oneshot --query-file …
             │    ├─ jämför innehållshashar före/efter
             │    ├─ grind: endast tillåtna filer
-            │    ├─ grind: typkontroll + tester (+ uppgiftens acceptanskontroll)
+            │                ├─ grind: typkontroll + tester (+ uppgiftens `verify`-kommando)
             │    └─ fel → nästa strategi för den feltypen, aldrig samma igen
             ├─ grönt  → git commit (bara agentens filer) + backlog uppdateras
             └─ rött   → selektiv återställning + BLOCKED (eller väntar)
@@ -97,7 +97,7 @@ en snävare filräckvidd eller en omstart från ögonblicksbilden.
 | `guard` | fil utanför uppdraget | upprepa med explicit räckvidd | — (blockeras) | — |
 | `typecheck` | `tsc --noEmit` | reparera de exakta felen | annan modell | omstart, enklare lösning |
 | `tests` | `bun test` | reparera orsaken i koden | annan modell, enskilt test först | omstart, minimal beteendepåverkan |
-| `accept` | uppgiftens `accept`-kommando | reparera mot kommandot | annan modell | — |
+| `accept` | uppgiftens `verify`-kommando | reparera mot kommandot | annan modell | — |
 | `blocked-task` | agentens `BLOCKED`-svar | — (kräver människa) | — | — |
 
 Ett fel som uppstår efter en grön förkontroll loggas dessutom som **regression**,
@@ -125,6 +125,43 @@ Rapportering per uppgift skrivs till `data/agent/reports/<uppgift>-<tid>.json`
 och som en rad i `data/agent/recovery.jsonl`: uppgiftens id, feltyp, använda
 strategier, antal försök, verifieringsresultat, ändrade filer och slutstatus.
 Samma sammanfattning hamnar i `docs/agent-progress.md` och i arbetarens logg.
+
+## Acceptanskriterier: `verify` och `acceptance`
+
+En uppgift har två fält för samma sak, och de får aldrig blandas:
+
+- `verify` — **ett kommando**, kört från projektroten med `bash -lc`, till exempel
+  `bun test tests/motion.test.ts`. Det är den enda delen av acceptansen maskinen
+  kör.
+- `acceptance` (och det äldre `accept`) — **prosa** som beskriver kriteriet för en
+  människa. Den läses och rapporteras, men körs aldrig.
+- `manual: true` — en människa måste göra uppgiften. Slingan väljer den aldrig.
+
+Bakgrunden: slingan delade tidigare hela `accept`-texten på mellanslag och körde
+den som ett program. En uppgift vars kriterium började med "GET /perf.js svarar
+200" körde alltså programmet `GET` och kastade
+`Executable not found in $PATH: "GET"` — två cykler i rad, efter att agenten
+redan gjort klart arbetet. Nu gäller:
+
+- ett fel i ett `verify`-kommando blir en **check som failar** (`accept`), aldrig
+  ett kastat undantag; `run()` fångar även en saknad körbar fil;
+- en uppgift som bara har prosa får checken `accept (prosa, ej maskinellt
+  verifierad)` i rapporten, så ingen förväxlar "testerna är gröna" med
+  "kriteriet är uppfyllt";
+- `manual`-uppgifter filtreras bort innan modellen anropas.
+
+Verktyg:
+
+```bash
+bun scripts/backlog-lint.ts             # strukturfel (exit 1) och kvalitetsvarningar
+bun scripts/backlog-verify.ts           # visa vilka uppgifter som kan få verify
+bun scripts/backlog-verify.ts --write   # skriv migreringen (rör aldrig accept-texten)
+```
+
+Linten körs före varje uppgift: strukturfel stoppar cykeln innan ett modellanrop
+spenderas, varningar loggas. Efter migreringen 2026-11-25 har 97 av 97 väntande
+uppgifter ett körbart `verify`; två är parkerade som `manual` (d3-04, qa-08) där
+kriteriet bara går att läsa.
 
 ## iCloud-dubbletter
 

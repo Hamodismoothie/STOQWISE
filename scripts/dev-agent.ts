@@ -125,8 +125,16 @@ export type Task = {
   status: "pending" | "done" | "blocked";
   /** Files or directories the task is expected to touch, as a hint. */
   files?: string[];
-  /** Extra gate, run after typecheck and tests. */
+  /** Human-readable acceptance criterion. Prose: it is read, never executed. */
+  acceptance?: string;
+  /** Legacy name for the same prose; kept so existing rows are not rewritten. */
   accept?: string;
+  /** Machine-checkable gate: a shell command run from the repository root. */
+  verify?: string;
+  /** A human must do this task; the loop never picks it up. */
+  manual?: boolean;
+  /** Blast radius hint; a paid model is not spent on `high` by default. */
+  risk?: "low" | "medium" | "high";
   note?: string;
   doneAt?: string;
   commit?: string;
@@ -136,7 +144,63 @@ export type Task = {
   blockedStrategies?: string[];
 };
 
-type Backlog = { tasks: Task[] };
+export type Backlog = { tasks: Task[] };
+
+/**
+ * How a task can be judged. `command` is run as a shell line; `prose` is shown
+ * to a human and never executed; `none` means the task has no criterion at all.
+ */
+export function planAcceptance(task: Task):
+  | { kind: "command"; command: string }
+  | { kind: "prose"; text: string }
+  | { kind: "none" } {
+  const command = task.verify?.trim();
+  if (command) return { kind: "command", command };
+  const text = (task.acceptance ?? task.accept ?? "").trim();
+  if (text) return { kind: "prose", text };
+  return { kind: "none" };
+}
+
+/** A `manual` task is a human's job; the loop must never spend a model call on it. */
+export function nextPending(backlog: Backlog): Task | undefined {
+  return backlog.tasks
+    .filter((task) => task.status === "pending" && !task.manual)
+    .sort((a, b) => a.priority - b.priority)[0];
+}
+
+export type BacklogLint = { errors: string[]; warnings: string[]; unverifiable: string[] };
+
+/**
+ * Structural checks the loop runs before it spends anything. An error stops the
+ * cycle (the queue itself is broken); a warning is reported and the cycle runs.
+ */
+export function lintBacklog(backlog: Backlog): BacklogLint {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const unverifiable: string[] = [];
+  if (!backlog || !Array.isArray(backlog.tasks)) {
+    return { errors: ["backloggen saknar en tasks-lista"], warnings, unverifiable };
+  }
+  const seen = new Set<string>();
+  for (const task of backlog.tasks) {
+    if (!task.id || typeof task.id !== "string") {
+      errors.push("uppgift utan id");
+      continue;
+    }
+    if (seen.has(task.id)) errors.push(`dublett-id ${task.id}`);
+    seen.add(task.id);
+    if (!task.title || !task.title.trim()) errors.push(`${task.id}: saknar title`);
+    if (!["pending", "done", "blocked"].includes(task.status)) errors.push(`${task.id}: okänd status ${String(task.status)}`);
+    if (typeof task.priority !== "number" || !Number.isFinite(task.priority)) errors.push(`${task.id}: saknar prioritet`);
+    if (task.verify !== undefined && !task.verify.trim()) errors.push(`${task.id}: verify är tom`);
+    if (task.manual && task.verify) warnings.push(`${task.id}: manual och verify samtidigt; verify körs aldrig`);
+    if (task.status === "pending" && !task.manual && planAcceptance(task).kind !== "command") {
+      unverifiable.push(task.id);
+      warnings.push(`${task.id}: acceptanskriteriet är inte maskinellt verifierbart`);
+    }
+  }
+  return { errors, warnings, unverifiable };
+}
 
 export type SnapshotKind = "tar" | "tree";
 
@@ -273,16 +337,26 @@ const releaseLock = (): void => rmSync(LOCK_FILE, { force: true });
 
 function run(command: string[], timeoutMs: number): { ok: boolean; seconds: number; out: string } {
   const started = performance.now();
-  const result = Bun.spawnSync(command, {
-    cwd: ROOT,
-    env: { ...process.env, NODE_ENV: "test", RESEND_API_KEY: "", MAIL_FROM: "" },
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: timeoutMs,
-  });
+  const seconds = (): number => Math.round((performance.now() - started) / 100) / 10;
+  let result: ReturnType<typeof Bun.spawnSync>;
+  try {
+    result = Bun.spawnSync(command, {
+      cwd: ROOT,
+      env: { ...process.env, NODE_ENV: "test", RESEND_API_KEY: "", MAIL_FROM: "" },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+    });
+  } catch (error) {
+    // A missing executable or a bad working directory must be a failed check,
+    // never an exception: a throw here used to abort the whole task after the
+    // agent had already done the work (cycle 61-62, `Executable not found: GET`).
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, seconds: seconds(), out: `kunde inte starta \`${command.join(" ")}\`: ${message}` };
+  }
   return {
     ok: result.exitCode === 0,
-    seconds: Math.round((performance.now() - started) / 100) / 10,
+    seconds: seconds(),
     out: `${result.stdout?.toString() ?? ""}\n${result.stderr?.toString() ?? ""}`.trim(),
   };
 }
@@ -330,7 +404,7 @@ function diffManifests(before: Map<string, string>): { changed: string[]; delete
   return { changed, deleted };
 }
 
-function allowed(path: string): boolean {
+export function allowed(path: string): boolean {
   if (DENIED_PATHS.some((denied) => path === denied || path.startsWith(`${denied}/`))) return false;
   return ALLOWED_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
@@ -500,7 +574,7 @@ const STRATEGIES: Record<FailureKind, Strategy[]> = {
       id: "accept-repair",
       label: "reparera mot uppgiftens acceptanskontroll",
       prompt: ({ task }) =>
-        `Uppgiftens acceptanskontroll (\`${task.accept ?? ""}\`) misslyckades. Kör kommandot själv, läs felet och rätta tills det är grönt. Ändra inte acceptanskontrollen.`,
+        `Uppgiftens acceptanskontroll (\`${task.verify ?? task.accept ?? ""}\`) misslyckades. Kör kommandot själv, läs felet och rätta tills det är grönt. Ändra inte acceptanskontrollen.`,
     },
     {
       id: "accept-alt-model",
@@ -508,7 +582,7 @@ const STRATEGIES: Record<FailureKind, Strategy[]> = {
       model: "next",
       extraTurns: 6,
       prompt: ({ task }) =>
-        `Acceptanskontrollen \`${task.accept ?? ""}\` fallerar fortfarande. Kör den, läs utdata och rätta orsaken. Kör även \`bun test\` innan du svarar.`,
+        `Acceptanskontrollen \`${task.verify ?? task.accept ?? ""}\` fallerar fortfarande. Kör den, läs utdata och rätta orsaken. Kör även \`bun test\` innan du svarar.`,
     },
   ],
 };
@@ -950,6 +1024,13 @@ type Plan = {
 };
 
 function taskPrompt(task: Task, input: { attempt: number; maxAttempts: number; strategy: Strategy | null; failure: Failure | null }): string {
+  const acceptance = planAcceptance(task);
+  const gate =
+    acceptance.kind === "command"
+      ? `- Uppgiften är godkänd först när detta kommando är grönt. Kör det själv innan du svarar: \`${acceptance.command}\`\n`
+      : acceptance.kind === "prose"
+        ? `- Uppgiftens kriterium är beskrivet i text och granskas av en människa: ${acceptance.text.split("\n").join(" ")}\n`
+        : "";
   const base = `Du arbetar autonomt i STOQWISE-projektet. Läs AGENTS.md i projektroten först och följ den.
 
 UPPGIFT: ${task.title}
@@ -963,7 +1044,7 @@ REGLER
 - Ändra aldrig: package.json, bun.lock, .env*, data/, docs/backlog.json, docs/agent-progress.md, scripts/dev-agent.ts, scripts/worker.ts.
 - Ändra aldrig prissättning, abonnemang, behörigheter, säkerhetslogik eller produktionsdata. Om uppgiften kräver det: skriv BLOCKED överst i svaret, förklara varför och ändra ingenting.
 - Kör \`bun run typecheck\` innan du svarar och åtgärda fel du själv infört. Kör \`bun test\` om du ändrat kod som testerna täcker.
-- Avsluta med en kort lista över ändrade filer och varför.
+${gate}- Avsluta med en kort lista över ändrade filer och varför.
 - Skriv på svenska i kodkommentarer och dokumentation.`;
 
   if (!input.failure) return base;
@@ -1074,6 +1155,11 @@ function check(name: string, command: string[], timeoutMs: number): Check {
   };
 }
 
+/** Run a task's own gate, written as one shell line exactly as a human would. */
+function checkShell(name: string, command: string, timeoutMs: number): Check {
+  return check(name, ["bash", "-lc", command], timeoutMs);
+}
+
 /**
  * The project's own gates. Typecheck decides whether tests are worth running, so
  * a broken build does not spend a minute on the suite.
@@ -1081,9 +1167,22 @@ function check(name: string, command: string[], timeoutMs: number): Check {
 function verifyTask(task: Task, baselineGreen: boolean): { ok: boolean; checks: Check[]; failure: Failure | null; regression: boolean } {
   const checks: Check[] = [check("typkontroll", ["bun", "run", "typecheck"], 180_000)];
   if (checks[0]!.ok) checks.push(check("tester", ["bun", "test"], 600_000));
-  if (checks.every((item) => item.ok) && task.accept) {
-    const [command, ...args] = task.accept.split(" ");
-    checks.push(check(`accept (${task.accept})`, [command!, ...args], 300_000));
+  if (checks.every((item) => item.ok)) {
+    const acceptance = planAcceptance(task);
+    if (acceptance.kind === "command") {
+      checks.push(checkShell(`accept (${acceptance.command})`, acceptance.command, 300_000));
+    } else if (acceptance.kind === "prose") {
+      // Prose cannot be executed. It is reported as an explicit, visible note so
+      // nobody mistakes "tests passed" for "the acceptance criterion was met" —
+      // running it as a command is what crashed the loop for two cycles.
+      checks.push({
+        name: "accept (prosa, ej maskinellt verifierad)",
+        ok: true,
+        seconds: 0,
+        detail: acceptance.text.split("\n").join(" ").slice(0, 300),
+        output: "",
+      });
+    }
   }
   const failed = checks.find((item) => !item.ok);
   if (!failed) return { ok: true, checks, failure: null, regression: false };
@@ -1299,7 +1398,15 @@ function cycleWork(options: { dryRun?: boolean } = {}): CycleResult {
   }
 
   const backlog = readBacklog();
-  const next = backlog.tasks.filter((task) => task.status === "pending").sort((a, b) => a.priority - b.priority)[0];
+  const lint = lintBacklog(backlog);
+  if (lint.errors.length > 0) {
+    // A broken queue is a human's fix, not a model's: stop before spending.
+    return { ok: false, halt: true, detail: `backloggen har strukturella fel: ${lint.errors.slice(0, 3).join(" · ")}` };
+  }
+  if (lint.warnings.length > 0) {
+    log(`${lint.warnings.length} varning(ar) i backloggen: ${lint.warnings.slice(0, 3).join(" · ")}${lint.warnings.length > 3 ? " …" : ""}`);
+  }
+  const next = nextPending(backlog);
   if (!next) {
     // Nothing to implement: use the cycle to suggest what should come next. The
     // only wait left is human review — once docs/backlog.json is touched again,
