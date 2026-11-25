@@ -46,9 +46,9 @@ giltig · `bun scripts/autopilot.ts --quick` alla steg gröna.
 
 Hermes-binären försvann från `~/.local/bin` samma kväll som Fas 0 skulle
 verifieras; varje cykel kastade `ENOENT` efter att uppgiften valts. Motorn har nu
-en utbytbar backend (`AGENT_CLI=hermes|claude`), och ett saknat CLI blir ett
-namngivet fel i stället för ett kastat undantag. Ett dygnstak (`AGENT_DAILY_MAX`,
-12) räknar modellkörningar per dygn så en betald backend inte kan skena.
+en utbytbar backend, och ett saknat CLI blir ett namngivet fel i stället för ett
+kastat undantag. Ett dygnstak (`AGENT_DAILY_MAX`, 6 sedan Z0) räknar
+modellkörningar per dygn så en betald backend inte kan skena.
 
 Första fullständiga körningen med den reparerade kedjan, `qa-11`: återupptog en
 avbruten uppgift och återställde trädet → ögonblicksbild (268 filer) → agenten
@@ -60,6 +60,25 @@ Rapport: `data/agent/reports/qa-11-2026-11-25T17-44-37-727Z.json`.
 Känt fel i just den rapporten: fältet `model` säger `tencent/hy4-flash:free` fast
 körningen gjordes med Claude Code — modellnamnet lästes ur en cache före
 backend-kontrollen. Koden är rättad; rapporten lämnas orörd som bevis.
+
+## Z0: kvotmedveten backend-pool (2026-11-25)
+
+Målet är 0 kr i extra månadskostnad. Motorn får därför bara använda backends som
+redan är betalda eller gratis, och den måste stanna när de tar slut.
+
+- **Pool:** `claude` → `codex` → `hermes`, i den ordningen, med hälsa i
+  `data/agent/backends.json`.
+- **Felklassning:** kvot, auth och saknad binär behandlas olika. Bara kvot och
+  saknad binär ger cooldown (15 min → 45 min → 2 h → 6 h).
+- **Paus:** är alla i cooldown väntar cykeln; uppgiften ligger kvar som pending
+  och inga försök förbrukas — varken vid cykelstart eller mitt i en uppgift.
+- **Kvitto:** `data/agent/usage.jsonl` får en rad per agentkörning med backend,
+  tokens och `total_cost_usd`.
+- **Tak:** `AGENT_DAILY_MAX=6`, ett skydd — inte ett produktivitetsmål.
+
+Simulerat med falska binärer (0 kvot): Claude svarade kvot → bytet gick till
+Codex → Codex svarade kvot → loopen bröt utan att röra strategistegen
+(försök före = efter) → nästa körning skrev `väntar på kvot: …`.
 
 ## Så fungerar den autonoma slingan
 

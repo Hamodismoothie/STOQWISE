@@ -36,20 +36,17 @@
   /* ------------------------------------------------------------ motion
      One switch for the whole product. The stored choice wins over the system
      preference, and both are reflected on <html data-motion="on|paused"> so
-     CSS and any canvas loop read the same state. */
-  var MOTION_KEY = "lr-motion";
-  var storedMotion = null;
-  try {
-    storedMotion = localStorage.getItem(MOTION_KEY);
-  } catch (e) {
-    storedMotion = null;
-  }
+     CSS and any canvas loop read the same state.
+     Beslutet fattas av /motion.js (samma modul som src/ui/motion.ts), så
+     lagringsnyckel och tolkning finns på ett enda ställe. */
+  var motionModule = null;
+  // Valet gäller sidan även när lagringen är blockerad och inte kan läsas tillbaka.
+  var pageMotionChoice = null;
   var systemReduce = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-  function motionPaused() {
-    if (storedMotion === "paused") return true;
-    if (storedMotion === "on") return false;
-    return systemReduce.matches;
+  function currentMotion() {
+    var stored = pageMotionChoice !== null ? pageMotionChoice : motionModule.readStoredMotion();
+    return motionModule.resolveMotionPreference(motionModule.prefersReducedMotion(), stored);
   }
 
   function syncMotionButtons() {
@@ -65,24 +62,30 @@
   }
 
   function applyMotion() {
-    root.setAttribute("data-motion", motionPaused() ? "paused" : "on");
+    if (!motionModule) return;
+    motionModule.applyMotionPreference(currentMotion());
     syncMotionButtons();
   }
 
   function toggleMotion() {
-    storedMotion = motionPaused() ? "on" : "paused";
-    try {
-      localStorage.setItem(MOTION_KEY, storedMotion);
-    } catch (e) {
-      /* storage may be disabled; the choice still holds for this page */
-    }
+    if (!motionModule) return;
+    pageMotionChoice = currentMotion().enabled;
+    /* storage may be disabled; the choice still holds for this page */
+    motionModule.writeStoredMotion(pageMotionChoice);
     applyMotion();
   }
 
-  applyMotion();
+  import("/motion.js")
+    .then(function (module) {
+      motionModule = module;
+      applyMotion();
+    })
+    .catch(function () {
+      /* Utan modulen gäller CSS-regeln för prefers-reduced-motion som tidigare. */
+    });
   if (typeof systemReduce.addEventListener === "function") {
     systemReduce.addEventListener("change", function () {
-      if (storedMotion !== null) return;
+      if (!motionModule || currentMotion().source === "user") return;
       applyMotion();
     });
   }
@@ -1433,8 +1436,6 @@
 
   var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var narrow = window.matchMedia && window.matchMedia("(max-width: 900px)").matches;
-  var motionOff = document.documentElement.getAttribute("data-motion") === "paused";
-  var want3d = !(reduced || narrow || motionOff);
 
   var TEXT = {
     play: sv ? "Spela" : "Play",
@@ -2494,5 +2495,11 @@
 
   filterTable();
   applyModeUi(root.getAttribute("data-mode") || "physical");
-  applyView(want3d ? "3d" : "table");
+  // Användarens paus läses från /motion.js, samma modul som växeln skriver via.
+  import("/motion.js")
+    .then(function (motion) { return motion.readStoredMotion() === true; })
+    .catch(function () { return false; })
+    .then(function (motionOff) {
+      applyView(reduced || narrow || motionOff ? "table" : "3d");
+    });
 })();

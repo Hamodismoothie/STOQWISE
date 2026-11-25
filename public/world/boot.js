@@ -9,6 +9,8 @@
  * No inventory maths happens here: the payload comes from the server-side
  * scene adapter, and the what-if sliders call the analysis endpoint.
  */
+import { readStoredMotion } from "/motion.js";
+
 const CARTON_LABEL = {
   sv: {
     staticReduced: "Rörelsen är pausad enligt din systeminställning. Lagret visas som en statisk bild; all text och alla siffror finns kvar.",
@@ -47,13 +49,7 @@ const reducedMotion = () =>
   typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)").matches : false;
 
 /** The product-wide pause switch (see ui/motion.ts) also stops the world. */
-function storedPause() {
-  try {
-    return localStorage.getItem("lr-motion") === "paused";
-  } catch {
-    return false;
-  }
-}
+const storedPause = () => readStoredMotion() === true;
 
 export function bootWorld() {
   const root = document.querySelector("[data-world]");

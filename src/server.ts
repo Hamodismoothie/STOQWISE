@@ -3000,6 +3000,7 @@ async function serveStatic(path: string, acceptEncoding = ""): Promise<Response 
   const transpiledModules: Record<string, string> = {
     "/world/sim-engine.js": "ui/live-simulation.ts",
     "/perf.js": "ui/perf.ts",
+    "/motion.js": "ui/motion.ts",
   };
   const transpiledSource = transpiledModules[path];
   if (transpiledSource) {

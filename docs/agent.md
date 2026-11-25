@@ -61,15 +61,28 @@ Varje cykel kastade då `ENOENT` **efter** att uppgiften valts, vilket såg ut s
 ett kodfel men var en saknad förutsättning. Motorn äger uppgiften, grindarna och
 återställningen; agenten är nu en utbytbar kommandolinje:
 
-| `AGENT_CLI` | Kommando | Modell |
-|---|---|---|
-| `hermes` (standard) | `hermes chat --oneshot --query-file …` | Nous gratismodeller |
-| `claude` | `claude -p … --permission-mode acceptEdits --allowedTools …` | Claude Codes egen modell |
+| Prioritet | Backend | Kommando | Modell |
+|---|---|---|---|
+| 1 | `claude` | `claude -p … --output-format json --permission-mode acceptEdits` | Claude Codes egen modell |
+| 2 | `codex` | `codex exec --sandbox workspace-write --skip-git-repo-check` | ChatGPT-planens modell |
+| 3 | `hermes` | `hermes chat --oneshot --query-file …` | Nous gratismodeller |
 
-Ett saknat eller oanvändbart CLI blir nu ett **namngivet fel** (`agenten kunde
-inte startas …`), aldrig ett kastat undantag: försöket rullas tillbaka och nästa
-strategi eller uppgift får sin tur. `AGENT_DAILY_MAX` (12) räknar
-modellkörningar per dygn i `state.json`, så en betald backend inte kan skena.
+`AGENT_CLI` kan tvinga fram en enda backend; annars gäller ordningen ovan och
+hälsan per backend sparas i `data/agent/backends.json`. Ett svar klassas som
+**kvot** (`usage limit`, `429`, `quota`), **auth** (`401`, inloggning) eller
+**saknad binär** (`ENOENT`), och varje klass har sin egen åtgärd:
+
+- kvot eller saknad binär → backend i cooldown 15 min → 45 min → 2 h → 6 h, och
+  nästa backend provas **en** gång för samma försök;
+- auth → ingen cooldown (det läker inte av sig självt), uppgiften parkeras;
+- mitt i en uppgift bryter felet försöksloopen direkt: uppgiften ligger kvar som
+  `pending` och **inga strategier förbrukas**;
+- är alla backends i cooldown väntar cykeln (`väntar på kvot: …`) utan att välja
+  uppgift, så en slut kvot kostar kön ingenting.
+
+Varje körning skriver en rad i `data/agent/usage.jsonl` med backend, tokens
+(in/ut/cache) och `total_cost_usd` — förbrukningen mäts i stället för gissas.
+`AGENT_DAILY_MAX` (6) räknar modellkörningar per dygn i `state.json`.
 
 ## Grindar och säkerhet
 
@@ -216,7 +229,8 @@ föregående. Tills dess står cykeln still med beskedet att förslagen väntar 
 granskning, så modellen inte anropas i onödan. Om modellen ändå ger exakt samma
 text som förra gången skrivs ingen ny rubrik, utan bara en rad i loggen.
 
-Miljövariabler: `AGENT_CLI` (`hermes` eller `claude`), `CLAUDE_BIN`, `AGENT_DAILY_MAX` (12
+Miljövariabler: `AGENT_CLI` (tvingar fram `claude`, `codex` eller `hermes`),
+`CLAUDE_BIN`, `CODEX_BIN`, `AGENT_DAILY_MAX` (6
 modellkörningar per dygn), `AGENT_MODEL`, `AGENT_TASK_BUDGET_SECONDS` (600 per agentkörning),
 `AGENT_MAX_TURNS` (30), `AGENT_MAX_ATTEMPTS` (4, ett per reservstrategi),
 `AGENT_TASK_WALL_SECONDS` (900, väggklocka per uppgift), `WORKER_DEV_AGENT=false`

@@ -80,6 +80,40 @@ describe("rörelsepreferens", () => {
     }
   });
 
+  test("båda klienterna läser rörelsevalet från den serverade motion-modulen", () => {
+    expect(SERVER).toContain('"/motion.js": "ui/motion.ts"');
+    const clients = ["v3.js", "world/boot.js"].map((name) => ({
+      name,
+      source: readFileSync(new URL(`../public/${name}`, import.meta.url), "utf8"),
+    }));
+    for (const { name, source } of clients) {
+      // Ingen egen kopia av nyckeln eller av tolkningen av "paused"/"on".
+      expect(source, name).not.toContain(MOTION_STORAGE_KEY);
+      expect(source, name).not.toMatch(/=== "paused"\s*\)?\s*return/);
+      expect(source, name).toContain('"/motion.js"');
+      expect(source, name).toContain("readStoredMotion()");
+    }
+    const v3 = clients[0]!.source;
+    expect(v3).toContain("motionModule.applyMotionPreference(");
+    expect(v3).toContain("motionModule.resolveMotionPreference(");
+  });
+
+  test("den transpilerade modulen exporterar samma API som klienterna använder", async () => {
+    const source = readFileSync(new URL("../src/ui/motion.ts", import.meta.url), "utf8");
+    const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+    const mod = await import(`data:text/javascript;base64,${Buffer.from(js).toString("base64")}`);
+    for (const name of [
+      "applyMotionPreference",
+      "resolveMotionPreference",
+      "readStoredMotion",
+      "writeStoredMotion",
+      "prefersReducedMotion",
+    ]) {
+      expect(typeof mod[name], name).toBe("function");
+    }
+    expect(mod.resolveMotionPreference(true, null)).toEqual(resolveMotionPreference(true, null));
+  });
+
   test("blockerad lagring ger null och false i stället för krasch", () => {
     const original = (globalThis as { localStorage?: unknown }).localStorage;
     (globalThis as { localStorage?: unknown }).localStorage = {
