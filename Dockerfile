@@ -1,4 +1,4 @@
-# STOQWISE — produktionsimage.
+# STOQWISE produktionsimage.
 # En process, ingen byggkedja: Bun kör TypeScript direkt. Databasen (SQLite)
 # ligger på en monterad volym i /data, eftersom containerns övriga filsystem är
 # tillfälligt och töms vid varje deploy.

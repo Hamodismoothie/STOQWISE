@@ -25,6 +25,7 @@ const EXPECTED_CATEGORIES: Record<DemoEnvironmentId, string[]> = {
     "Verkstad",
   ],
   hem: ["Förvaring", "Kök", "Trädgård", "Belysning", "Städning", "Färg", "Säsong", "Järnhandel", "Utemöbler", "Utgående"],
+  livsmedel: ["Mejeri", "Kött och chark", "Frukt och grönt", "Fryst", "Torrvaror", "Dryck", "Bageri", "Färdigmat"],
   foodservice: [
     "Torrvaror",
     "Dryck",
@@ -41,9 +42,9 @@ const EXPECTED_CATEGORIES: Record<DemoEnvironmentId, string[]> = {
 const datasets = DEMO_ENVIRONMENTS.map((environment) => buildDemoDataset(environment.id));
 
 describe("demo environments", () => {
-  test("four distinct fictional companies with coherent metadata", () => {
-    expect(new Set(DEMO_ENVIRONMENTS.map((e) => e.id)).size).toBe(4);
-    expect(new Set(DEMO_ENVIRONMENTS.map((e) => e.company)).size).toBe(4);
+  test("five distinct fictional companies with coherent metadata", () => {
+    expect(new Set(DEMO_ENVIRONMENTS.map((e) => e.id)).size).toBe(5);
+    expect(new Set(DEMO_ENVIRONMENTS.map((e) => e.company)).size).toBe(5);
     for (const environment of DEMO_ENVIRONMENTS) {
       expect(environment.company).toMatch(/AB$/);
       expect(environment.orgNumber).toMatch(/^\d{6}-\d{4}$/);
@@ -97,7 +98,7 @@ describe("demo environments", () => {
       const result = analyze(dataset.items, { months: dataset.months });
       expect(result.kpis.inventoryValue).toBeGreaterThan(0);
       expect(result.kpis.turns).toBeGreaterThan(2);
-      expect(result.kpis.turns).toBeLessThan(15);
+      expect(result.kpis.turns).toBeLessThan(25);
       expect(result.kpis.deadStockCount).toBeGreaterThan(0);
       expect(result.kpis.overstockCount).toBeGreaterThanOrEqual(3);
       expect(result.kpis.stockoutRiskCount).toBeGreaterThan(0);

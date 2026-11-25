@@ -6,6 +6,7 @@
  * No dependency, because the parsing rules here are the product's problem
  * domain - not something to outsource to a generic library.
  */
+import { config } from "./config.ts";
 
 export interface ParsedCsv {
   headers: string[];
@@ -55,7 +56,7 @@ function countOutsideQuotes(line: string, delimiter: string): number {
   return count;
 }
 
-export function parseCsv(input: string, forcedDelimiter?: string): ParsedCsv {
+export function parseCsv(input: string, forcedDelimiter?: string, maxRows: number = config.maxRows): ParsedCsv {
   const warnings: string[] = [];
   let text = input.replace(/^\uFEFF/, "");
   if (text.includes("\u0000")) {
@@ -96,6 +97,7 @@ export function parseCsv(input: string, forcedDelimiter?: string): ParsedCsv {
     if (ch === "\n") {
       row.push(field);
       records.push(row);
+      if (records.length > maxRows + 1) throw new Error(`Filen har fler än ${maxRows.toLocaleString("sv-SE")} rader.`);
       row = [];
       field = "";
       continue;
@@ -107,6 +109,7 @@ export function parseCsv(input: string, forcedDelimiter?: string): ParsedCsv {
   if (field.length > 0 || row.length > 0) {
     row.push(field);
     records.push(row);
+    if (records.length > maxRows + 1) throw new Error(`Filen har fler än ${maxRows.toLocaleString("sv-SE")} rader.`);
   }
 
   const cleaned = records.filter((r) => r.some((c) => c.trim() !== ""));
@@ -136,6 +139,19 @@ export function parseCsv(input: string, forcedDelimiter?: string): ParsedCsv {
   }
 
   return { headers, rows, delimiter, warnings };
+}
+
+/**
+ * Escapes one CSV cell and neutralises spreadsheet formula injection. A cell
+ * that begins with =, +, -, @, tab or CR is prefixed with an apostrophe; Excel
+ * and LibreOffice treat the result as text instead of executing it. Numeric
+ * values are exempt so ordinary negative amounts stay numeric.
+ */
+export function csvCell(value: unknown, delimiter = ";"): string {
+  let text = value === null || value === undefined ? "" : String(value);
+  if (typeof value !== "number" && /^[\s]*[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  const quote = text.includes(delimiter) || /["\r\n]/.test(text);
+  return quote ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 /**

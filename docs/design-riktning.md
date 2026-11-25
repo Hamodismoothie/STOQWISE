@@ -1,4 +1,4 @@
-# Designriktning — Stoqwise (Lagerbok)
+# Designriktning: Stoqwise (Lagerbok)
 
 Detta dokument är art direction, inte dekoration. Varje val nedan har ett skäl, och
 skälet ska gå att säga högt i ett kundmöte.
@@ -7,7 +7,7 @@ skälet ska gå att säga högt i ett kundmöte.
 
 Stoqwise säljer en enda sak: **kapital som står stilla**. Produkten räknar ut var
 pengar sitter fast, vad de kostar per dag och vad som händer om man flyttar dem.
-Det är ett finansiellt och operationellt verktyg — inte en marknadsföringssajt.
+Det är ett finansiellt och operationellt verktyg, inte en marknadsföringssajt.
 
 Därför är den bärande metaforen **lagerboken**: den svenska handelsbokens rad för
 rad, där varje artikel är en post och varje post har ett belopp. Boken är
@@ -17,7 +17,7 @@ ser ut som alla andra.
 
 ## Tre prövade riktningar
 
-### A. Lagerbok — vald
+### A. Lagerbok (vald)
 **Koncept:** en svensk finanspublikation möter ett kalibrerat mätinstrument.
 Papper, bläck och oxiderad koppar. Tunna regler i stället för kort. Folionummer,
 marginalanteckningar och tabellsiffror som bär hela hierarkin.
@@ -28,11 +28,11 @@ marginalanteckningar och tabellsiffror som bär hela hierarkin.
   Grotesk (gränssnitt och etiketter), Geist Mono (belopp, SKU, tidsstämplar).
 - **Layout:** 12-kolumns rutnät med hårlinjer, asymmetrisk vänstermarginal,
   sektionsfolio, stora negativa ytor kring viktiga beslut.
-- **Navigation:** typografiskt index i vänsterkolumnen — nummer + namn, ingen ikonrad.
-- **Visualisering:** "graverad" data — 1 px linjer, punktad prognos, skrafterad
+- **Navigation:** typografiskt index i vänsterkolumnen: nummer + namn, ingen ikonrad.
+- **Visualisering:** "graverad" data: 1 px linjer, punktad prognos, skrafterad
   osäkerhetsyta, koppar som enda accent, etiketter i mono.
 - **Rörelse:** pappersliknande, 160–420 ms, inga studs. Siffror rullar, linjer ritas.
-- **Landing:** en redaktionell förstasida med masthead, platta I–III och noter —
+- **Landing:** en redaktionell förstasida med masthead, platta I–III och noter;
   inte hero + skärmbild.
 - **Dashboard:** en liggare i stället för ett kortbord: siffror på regler, sektioner
   med folio, åtgärder som rader.
@@ -61,7 +61,7 @@ operativ användning och för nära den minimalistiska SaaS-estetik som redan fi
 "den hållna raden". Den används exakt som levererad: `public/brand/` innehåller
 originalets SVG-filer oförändrade, och gränssnittet refererar dem som bilder så
 att ingen kod kan rita om dem. Märkets guld (`#C8A66A`) är den enda guldtonen i
-systemet; gränssnittets accent är fortfarande oxiderad koppar (`#96482A`) — två
+systemet; gränssnittets accent är fortfarande oxiderad koppar (`#96482A`), två
 toner av samma metall, där guldet bär märket och kopparn bär betydelsen.
 
 **Hantering:** pappersplatta endast i mörkt läge, aldrig omfärgning, aldrig
@@ -77,13 +77,13 @@ argumentet.
 
 | Roll | Typsnitt | Användning |
 |---|---|---|
-| Display | Newsreader 300/400 + kursiv | Förstasidans statement, sidrubriker, citat, sektionsnummer |
-| Editorial | Newsreader 400 | Ingresser, förklaringar, rapporttext |
-| Interface | Schibsted Grotesk 400/500/700 | Navigation, knappar, etiketter, tabeller |
+| Display och interface | Geist 400/500/600/700 | Rubriker, navigation, knappar, etiketter, tabeller |
 | Data | Geist Mono 400/500 | Belopp, antal, procent, datum, SKU, axlar |
+| PDF-editorial | Newsreader Italic | Kursiv serif i genererade rapporter |
 
 Alla tre är Open Font License och serveras lokalt från `public/fonts/` med
-licenstext. Ingen proprietär font påstås vara licensierad.
+licenstext. Ingen proprietär font påstås vara licensierad. Oanvända
+legacy-teckensnitt ligger i `assets/legacy-fonts/` och serveras inte.
 
 Sifferregler: tabular-nums överallt, `-0.03em` spärrning på stora belopp, enhet i
 mindre grad än talet, alltid hårt mellanslag mellan tal och enhet.

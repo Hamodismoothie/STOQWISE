@@ -1,0 +1,150 @@
+{
+  "tasks": [
+    {
+      "id": "smoke-pages",
+      "title": "Utöka smoke-testet med fler publika sidor",
+      "brief": "I scripts/autopilot.ts listas sidorna som smoke-steget hämtar. Lägg till /priser, /produkt och /kontakt i samma lista så att en trasig prissida eller produktsida upptäcks i varje verifieringscykel, inte bara i integrationstestet. Ändra inget annat.",
+      "files": [
+        "scripts/autopilot.ts"
+      ],
+      "priority": 1,
+      "status": "done",
+      "accept": "bun scripts/autopilot.ts --quick",
+      "note": "typecheck + 460 pass · 33.6s agent",
+      "doneAt": "2026-11-23T21:48:49.382Z",
+      "commit": "a76246d"
+    },
+    {
+      "id": "sitemap-lastmod",
+      "title": "Sitemap utan dubblerad kod",
+      "brief": "src/seo.ts bygger sitemap och robots från samma lista. Säkerställ att sitemapXml() inte kan producera en URL med dubbel snedstreck när appOrigin slutar med snedstreck, och lägg till ett test i tests/ som bevisar det. Ändra bara src/seo.ts och testfilen.",
+      "files": [
+        "src/seo.ts",
+        "tests/integration.test.ts"
+      ],
+      "priority": 2,
+      "status": "done",
+      "note": "typecheck + 461 pass · 154.7s agent",
+      "doneAt": "2026-11-23T21:52:30.459Z",
+      "commit": "f5b8b2b"
+    },
+    {
+      "id": "footer-link-audit",
+      "title": "Test som skyddar sidfotens länkar",
+      "brief": "Sidfoten i src/ui/base.ts marknadsShell länkar till produkt, resurser och företag. Lägg till ett integrationstest som kontrollerar att alla fyra kolumnrubrikerna och länkarna /dokumentation, /hjalp, /kom-igang, /om-oss, /kontakt, /integritet och /villkor finns i sidfoten på startsidan. Ändra bara tests/.",
+      "files": [
+        "tests/integration.test.ts"
+      ],
+      "priority": 3,
+      "status": "done",
+      "note": "typecheck + 462 pass · 116.1s agent",
+      "doneAt": "2026-11-23T21:54:35.106Z",
+      "commit": "9486f76"
+    },
+    {
+      "id": "jsonld-organization",
+      "title": "Strukturerad data för organisation och webbplats",
+      "brief": "Lägg till JSON-LD (schema.org Organization och WebSite) i head på publika sidor i src/ui/base.ts, med adresser byggda från absoluteUrl() i src/seo.ts så de inte kan glida isär. Ingen påhittad företagsinformation: använd bara namn, logotyp och webbplatsadress. Lägg till ett test som parsar JSON-LD och kontrollerar @type och url.",
+      "files": [
+        "src/ui/base.ts",
+        "src/seo.ts",
+        "tests/integration.test.ts"
+      ],
+      "priority": 4,
+      "status": "done",
+      "note": "typecheck + 463 pass · 185.5s agent",
+      "doneAt": "2026-11-23T22:10:31.942Z",
+      "commit": "c4486f6"
+    },
+    {
+      "id": "html-lang-locale",
+      "title": "Språkattributet följer valt språk",
+      "brief": "Lägg till ett integrationstest som hämtar /, /produkt, /priser, /om-oss och /kontakt med cookie lr_lang=sv respektive lr_lang=en och kontrollerar att <html lang=\"…\"> är sv respektive en. Ändra bara tests/.",
+      "files": [
+        "tests/integration.test.ts"
+      ],
+      "priority": 5,
+      "status": "done",
+      "doneAt": "2026-11-23T22:14:04.333Z",
+      "note": "typecheck + 464 pass · 72.8s agent",
+      "commit": "11fcf4a"
+    },
+    {
+      "id": "smoke-404",
+      "title": "Smoke-steget kontrollerar även 404-sidan",
+      "brief": "Smoke-steget i scripts/autopilot.ts förväntar sig status 200 på alla listade sidor. Lägg till en separat kontroll som hämtar en medvetet okänd sökväg (till exempel /finns-inte) och kräver status 404, så att en trasig felhanterare upptäcks. Ändra bara scripts/autopilot.ts.",
+      "files": [
+        "scripts/autopilot.ts"
+      ],
+      "priority": 6,
+      "status": "done",
+      "accept": "bun scripts/autopilot.ts --quick",
+      "doneAt": "2026-11-23T22:18:13.942Z",
+      "note": "typecheck + 464 pass · 62.3s agent",
+      "commit": "7a6a069"
+    },
+    {
+      "id": "seo-doc",
+      "title": "Dokumentera den publika SEO-kedjan",
+      "brief": "Skriv docs/seo.md som förklarar hur canonical, og:url, og:image, JSON-LD, robots.txt och sitemap.xml hänger ihop: vilka funktioner i src/seo.ts som äger vilken del, varför query-strängen strippas, varför /404 och sessionsrutterna får noindex, och hur man lägger till en ny publik sida utan att listorna glider isär. Ändra bara docs/.",
+      "files": [
+        "docs/seo.md"
+      ],
+      "priority": 7,
+      "status": "done",
+      "doneAt": "2026-11-23T22:22:35.968Z",
+      "note": "typecheck + 464 pass · 166.4s agent",
+      "commit": "5220b56"
+    },
+    {
+      "id": "hreflang-language-urls",
+      "title": "Språk i URL eller cookie — produktbeslut",
+      "brief": "Språket styrs i dag av en cookie, vilket ger en URL per sida men gör språken oindexerbara. Att införa språksegment i URL:en påverkar routing, canonical, sitemap och alla interna länkar och är ett produktbeslut. Uppgiften är blockerad till dess att ägaren fattat beslut; agenten ska inte genomföra den.",
+      "priority": 99,
+      "status": "blocked",
+      "note": "Kräver produktbeslut om URL-struktur. Inte en agentuppgift."
+    },
+    {
+      "id": "sitemap-no-redirects",
+      "title": "Sitemappen ska inte lista omdirigerade sidor",
+      "brief": "PUBLIC_PAGES i src/seo.ts innehåller /dokumentation, men servern svarar 301 till /kom-igang, sa sitemappen annonserar en adress som inte serverar nagot dokument. Ta bort /dokumentation ur PUBLIC_PAGES (behall lanken i navigation och sidfot) och lagg till ett integrationstest som hamtar varje <loc> ur sitemapXml med redirect manual och kraver 200. Andra bara src/seo.ts och tests/.",
+      "files": [
+        "src/seo.ts",
+        "tests/integration.test.ts"
+      ],
+      "priority": 8,
+      "status": "done",
+      "doneAt": "2026-11-23T22:25:53.092Z",
+      "note": "typecheck + 465 pass · 178.2s agent",
+      "commit": "9af686c"
+    },
+    {
+      "id": "utvecklare-noindex",
+      "title": "Utvecklardokumentationen ska vara noindex",
+      "brief": "/utvecklare kraver inloggning men isIndexable() returnerar true, sa sidan far canonical, JSON-LD och saknar Disallow i robots.txt. Lagg till /utvecklare i PRIVATE_PREFIXES i src/seo.ts och ett test som kontrollerar att isIndexable(\"/utvecklare\") ar false samt att robotsTxt() innehaller Disallow: /utvecklare. Andra bara src/seo.ts och tests/.",
+      "files": [
+        "src/seo.ts",
+        "tests/integration.test.ts"
+      ],
+      "priority": 9,
+      "status": "done",
+      "doneAt": "2026-11-23T22:56:46.121Z",
+      "note": "typecheck + 466 pass · 153.4s agent",
+      "commit": "9c60103"
+    },
+    {
+      "id": "app-noindex",
+      "title": "Inloggade appen ska bara noindex i HTML",
+      "brief": "appShell i src/ui/base.ts forlitar sig enbart pa robots.txt. Lagg till <meta name=\"robots\" content=\"noindex, follow\"> i appens head sa en delad appadress inte kan indexeras aven om robots.txt ignoreras, och ett integrationstest som hamtar en inloggad appsida och kraver metatagen samt franvaro av canonical. Andra bara src/ui/base.ts och tests/.",
+      "files": [
+        "src/ui/base.ts",
+        "tests/integration.test.ts"
+      ],
+      "priority": 10,
+      "status": "done",
+      "doneAt": "2026-11-23T22:59:56.183Z",
+      "note": "typecheck + 467 pass · 167.5s agent",
+      "commit": "1352771"
+    }
+  ]
+}

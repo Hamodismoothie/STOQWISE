@@ -13,6 +13,20 @@
  */
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 
+// A 12 MB upload can otherwise expand to an arbitrary amount of memory. These
+// limits are deliberately generous for real exports (200k rows) while making
+// zip bombs and crafted column references fail before they can exhaust the
+// process.
+const MAX_ZIP_ENTRIES = 256;
+const MAX_ENTRY_UNCOMPRESSED = 64 * 1024 * 1024;
+const MAX_TOTAL_UNCOMPRESSED = 128 * 1024 * 1024;
+const MAX_COMPRESSION_RATIO = 200;
+const MAX_ENTRY_NAME = 512;
+const MAX_XLSX_ROWS = 250_000;
+const MAX_XLSX_CELLS = 2_000_000;
+const MAX_SHARED_STRINGS = 1_000_000;
+const MAX_COLUMN_INDEX = 16_383; // XFD, the last Excel column
+
 /* ------------------------------------------------------------------- zip */
 
 const CRC_TABLE = (() => {
@@ -118,6 +132,7 @@ function zip(files: Array<{ name: string; content: string }>): Uint8Array {
 
 function unzip(buffer: Uint8Array): Map<string, Uint8Array> {
   const files = new Map<string, Uint8Array>();
+  if (buffer.byteLength < 22) throw new Error("Filen är inte en giltig xlsx-fil (ZIP-struktur saknas).");
   const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
   // Locate the end-of-central-directory record (max 64 KiB comment).
@@ -131,24 +146,59 @@ function unzip(buffer: Uint8Array): Map<string, Uint8Array> {
   if (eocd === -1) throw new Error("Filen är inte en giltig xlsx-fil (ZIP-struktur saknas).");
 
   const entryCount = view.getUint16(eocd + 10, true);
-  let pointer = view.getUint32(eocd + 16, true);
+  const centralSize = view.getUint32(eocd + 12, true);
+  const centralOffset = view.getUint32(eocd + 16, true);
+  if (entryCount > MAX_ZIP_ENTRIES) throw new Error("xlsx-filen innehåller för många delar.");
+  if (centralOffset + centralSize > eocd || centralOffset >= buffer.byteLength) {
+    throw new Error("xlsx-filen har en ogiltig ZIP-katalog.");
+  }
+  let pointer = centralOffset;
   const decoder = new TextDecoder();
+  let totalUncompressed = 0;
 
   for (let i = 0; i < entryCount; i++) {
-    if (view.getUint32(pointer, true) !== 0x02014b50) break;
+    if (pointer + 46 > buffer.byteLength) throw new Error("xlsx-filen har en trunkerad ZIP-katalog.");
+    if (view.getUint32(pointer, true) !== 0x02014b50) throw new Error("xlsx-filen har en ogiltig ZIP-post.");
     const method = view.getUint16(pointer + 10, true);
     const compressedSize = view.getUint32(pointer + 20, true);
+    const declaredSize = view.getUint32(pointer + 24, true);
     const nameLength = view.getUint16(pointer + 28, true);
     const extraLength = view.getUint16(pointer + 30, true);
     const commentLength = view.getUint16(pointer + 32, true);
     const localOffset = view.getUint32(pointer + 42, true);
+    if (nameLength > MAX_ENTRY_NAME) throw new Error("xlsx-filen har ett ogiltigt delnamn.");
+    if (pointer + 46 + nameLength + extraLength + commentLength > buffer.byteLength) {
+      throw new Error("xlsx-filen har en trunkerad ZIP-post.");
+    }
     const name = decoder.decode(buffer.subarray(pointer + 46, pointer + 46 + nameLength));
+    if (!name || name.includes("\u0000") || name.startsWith("/") || name.split("/").includes("..")) {
+      throw new Error("xlsx-filen innehåller ett otillåtet delnamn.");
+    }
+    if (method !== 0 && method !== 8) throw new Error("xlsx-filen använder en ZIP-metod som inte stöds.");
+    if (declaredSize > MAX_ENTRY_UNCOMPRESSED) throw new Error("xlsx-filen innehåller en för stor del.");
+    if (compressedSize > 0 && declaredSize > compressedSize * MAX_COMPRESSION_RATIO) {
+      throw new Error("xlsx-filen har en misstänkt expanderingsgrad.");
+    }
+    if (totalUncompressed + (method === 0 ? compressedSize : declaredSize) > MAX_TOTAL_UNCOMPRESSED) {
+      throw new Error("xlsx-filen expanderar till för mycket data.");
+    }
 
+    if (localOffset + 30 > buffer.byteLength || view.getUint32(localOffset, true) !== 0x04034b50) {
+      throw new Error("xlsx-filen har en ogiltig lokal ZIP-post.");
+    }
     const localNameLength = view.getUint16(localOffset + 26, true);
     const localExtraLength = view.getUint16(localOffset + 28, true);
     const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    if (dataStart > buffer.byteLength || compressedSize > buffer.byteLength - dataStart) {
+      throw new Error("xlsx-filen har en trunkerad ZIP-post.");
+    }
     const raw = buffer.subarray(dataStart, dataStart + compressedSize);
-    files.set(name, method === 8 ? new Uint8Array(inflateRawSync(raw)) : raw);
+    const remaining = MAX_TOTAL_UNCOMPRESSED - totalUncompressed;
+    const output = method === 8 ? new Uint8Array(inflateRawSync(raw, { maxOutputLength: remaining })) : raw;
+    if (output.byteLength > MAX_ENTRY_UNCOMPRESSED) throw new Error("xlsx-filen innehåller en för stor del.");
+    totalUncompressed += output.byteLength;
+    if (totalUncompressed > MAX_TOTAL_UNCOMPRESSED) throw new Error("xlsx-filen expanderar till för mycket data.");
+    files.set(name, output);
 
     pointer += 46 + nameLength + extraLength + commentLength;
   }
@@ -302,6 +352,7 @@ export function readXlsx(buffer: Uint8Array): string[][] {
   if (sharedXml) {
     const text = decoder.decode(sharedXml);
     for (const match of text.matchAll(/<si>([\s\S]*?)<\/si>/g)) {
+      if (shared.length >= MAX_SHARED_STRINGS) throw new Error("xlsx-filen innehåller för många delade strängar.");
       const parts = [...match[1]!.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((m) => decodeXmlEntities(m[1]!));
       shared.push(parts.join(""));
     }
@@ -329,20 +380,25 @@ export function readXlsx(buffer: Uint8Array): string[][] {
 
   const text = decoder.decode(sheetXml);
   const rows: string[][] = [];
+  let cells = 0;
 
   for (const rowMatch of text.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+    if (rows.length >= MAX_XLSX_ROWS) throw new Error("xlsx-filen har för många rader.");
     const row: string[] = [];
     for (const cellMatch of rowMatch[1]!.matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)) {
+      if (++cells > MAX_XLSX_CELLS) throw new Error("xlsx-filen har för många celler.");
       const attrs = cellMatch[1]!;
       const body = cellMatch[2]!;
       const refMatch = attrs.match(/r="([A-Z]+\d+)"/);
       const index = refMatch ? columnIndex(refMatch[1]!) : row.length;
+      if (!Number.isFinite(index) || index < 0 || index > MAX_COLUMN_INDEX) throw new Error("xlsx-filen refererar till en ogiltig kolumn.");
       const type = attrs.match(/t="([^"]+)"/)?.[1] ?? "n";
 
       let value = "";
       if (type === "s") {
         const v = body.match(/<v>([\s\S]*?)<\/v>/)?.[1];
-        value = v !== undefined ? (shared[Number(v)] ?? "") : "";
+        const sharedIndex = v !== undefined ? Number(v) : Number.NaN;
+        value = Number.isInteger(sharedIndex) && sharedIndex >= 0 ? (shared[sharedIndex] ?? "") : "";
       } else if (type === "inlineStr") {
         value = [...body.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((m) => decodeXmlEntities(m[1]!)).join("");
       } else if (type === "str") {

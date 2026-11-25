@@ -15,6 +15,7 @@ import type { Locale } from "../i18n.ts";
  *   - colour comes from CSS variables, so light/dark both work
  */
 import { formatNumber } from "../analysis.ts";
+import { DISPLAY, foldTail } from "../tuning.ts";
 
 const esc = (v: unknown): string =>
   String(v ?? "")
@@ -68,7 +69,7 @@ export function forecastChart(
   options: { width?: number; height?: number; unit?: string; id?: string; locale?: Locale } = {},
 ): string {
   const w = options.width ?? 720;
-  const locale = options.locale ?? "sv";
+  const locale = options.locale ?? "en";
   const h = options.height ?? 260;
   const padL = 52;
   const padR = 14;
@@ -107,7 +108,7 @@ export function forecastChart(
     .map((p) => `<text x="${x(p.i).toFixed(1)}" y="${h - 12}" class="axis-label" text-anchor="middle">${esc(p.label)}</text>`)
     .join("");
 
-  return `<svg class="chart chart-line" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="Efterfrågeprognos">
+  return `<svg class="chart chart-line" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="${esc(appText(locale, "Efterfrågeprognos"))}">
     <title>${esc(appText(locale, "Historisk efterfrågan och prognos med osäkerhetsintervall"))}</title>
     ${gridLines}
     <polygon points="${band}" class="band"/>
@@ -123,37 +124,32 @@ export function forecastChart(
 
 export function barChart(
   items: Point[],
-  options: { width?: number; height?: number; unit?: string; tone?: "brass" | "mint" | "danger" } = {},
+  options: { unit?: string; tone?: "brass" | "mint" | "danger" } = {},
 ): string {
-  const w = options.width ?? 640;
-  const rowH = 30;
-  const h = options.height ?? Math.max(80, items.length * rowH + 16);
-  const labelW = Math.min(220, Math.max(110, w * 0.32));
   const max = niceMax(Math.max(1, ...items.map((i) => i.value)));
-  const barSpace = w - labelW - 70;
+  const tone = options.tone ? ` ${options.tone}` : "";
 
   const rows = items
-    .map((item, i) => {
-      const y = i * rowH + 6;
-      const width = Math.max(2, (item.value / max) * barSpace);
-      return `<g class="bar-row" style="--i:${i}">
-        <text x="0" y="${y + 14}" class="bar-label">${esc(item.label.slice(0, 34))}</text>
-        <rect x="${labelW}" y="${y + 4}" width="${width.toFixed(1)}" height="14" rx="2" class="bar-fill ${options.tone ?? ""}"/>
-        <text x="${w - 4}" y="${y + 15}" class="bar-value" text-anchor="end">${fmt(item.value)}</text>
-      </g>`;
+    .map((item) => {
+      const width = Math.max(2, (item.value / max) * 100);
+      return `<div class="bar-row" role="listitem">
+        <span class="bar-label">${esc(item.label)}</span>
+        <span class="bar-value">${fmt(item.value)}</span>
+        <span class="bar-track" aria-hidden="true"><span class="bar-fill${tone}" style="width:${width.toFixed(1)}%"></span></span>
+      </div>`;
     })
     .join("");
 
-  return `<svg class="chart chart-bars" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMinYMin meet" role="img" aria-label="Ranking">
-    <title>${esc(options.unit ?? "Fördelning")}</title>${rows}</svg>`;
+  return `<div class="bar-list" role="list" aria-label="${esc(options.unit ?? "Ranking")}">${rows}</div>`;
 }
 
 /* ----------------------------------------------------------------- donut */
 
 export function donut(
   segments: Array<{ label: string; value: number; tone?: string }>,
-  options: { size?: number; centerLabel?: string; centerValue?: string } = {},
+  options: { size?: number; centerLabel?: string; centerValue?: string; locale?: Locale } = {},
 ): string {
+  const locale = options.locale ?? "en";
   const size = options.size ?? 180;
   const r = size / 2 - 12;
   const cx = size / 2;
@@ -175,8 +171,8 @@ export function donut(
     })
     .join("");
 
-  return `<svg class="chart chart-donut" viewBox="0 0 ${size} ${size}" role="img" aria-label="Fördelning">
-    <title>Fördelning</title>
+  return `<svg class="chart chart-donut" viewBox="0 0 ${size} ${size}" role="img" aria-label="${esc(appText(locale, "Fördelning"))}">
+    <title>${esc(appText(locale, "Fördelning"))}</title>
     ${arcs}
     ${options.centerValue ? `<text x="${cx}" y="${cy + 2}" text-anchor="middle" class="donut-value">${esc(options.centerValue)}</text>` : ""}
     ${options.centerLabel ? `<text x="${cx}" y="${cy + 20}" text-anchor="middle" class="donut-label">${esc(options.centerLabel)}</text>` : ""}
@@ -193,7 +189,8 @@ export interface ScatterPoint {
   group?: string;
 }
 
-export function velocityMap(points: ScatterPoint[], options: { width?: number; height?: number } = {}): string {
+export function velocityMap(points: ScatterPoint[], options: { width?: number; height?: number; locale?: Locale } = {}): string {
+  const locale = options.locale ?? "en";
   const w = options.width ?? 720;
   const h = options.height ?? 320;
   const pad = 42;
@@ -212,25 +209,63 @@ export function velocityMap(points: ScatterPoint[], options: { width?: number; h
     })
     .join("");
 
-  return `<svg class="chart chart-scatter" viewBox="0 0 ${w} ${h}" role="img" aria-label="Omsättning mot marginal">
-    <title>Varje punkt är en artikel: omsättningshastighet mot marginal, storlek efter lagervärde</title>
+  return `<svg class="chart chart-scatter" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(appText(locale, "Omsättning mot marginal"))}">
+    <title>${esc(appText(locale, "Varje punkt är en artikel: omsättningshastighet mot marginal, storlek efter lagervärde"))}</title>
     <line x1="${pad}" y1="${h - pad}" x2="${w - 12}" y2="${h - pad}" class="axis"/>
     <line x1="${pad}" y1="${16}" x2="${pad}" y2="${h - pad}" class="axis"/>
-    <text x="${w / 2}" y="${h - 8}" class="axis-label" text-anchor="middle">Omsättning (ggr/år) →</text>
-    <text x="12" y="${h / 2}" class="axis-label" transform="rotate(-90 12 ${h / 2})" text-anchor="middle">Marginal % →</text>
+    <text x="${w / 2}" y="${h - 8}" class="axis-label" text-anchor="middle">${esc(appText(locale, "Omsättning (ggr/år) →"))}</text>
+    <text x="12" y="${h / 2}" class="axis-label" transform="rotate(-90 12 ${h / 2})" text-anchor="middle">${esc(appText(locale, "Marginal % →"))}</text>
     ${dots}
   </svg>`;
 }
 
 /* ---------------------------------------------------------- ABC/XYZ matrix */
 
-export function abcXyzMatrix(rows: Array<{ abc: string; x: number; y: number; z: number; value: number }>, options: { locale?: Locale } = {}): string {
-  const locale = options.locale ?? "sv";
+export interface MatrixArticle {
+  sku: string;
+  name: string;
+  abc: string;
+  xyz: string | null;
+  action: string;
+  value: number;
+}
+
+/**
+ * The matrix doubles as a filter. Each cell is a link to the article list with
+ * `abc`/`xyz` set, and the panel underneath explains, per cell, which articles
+ * are in it, what to do with them and the exact cuts that produced the class.
+ * The list is server-rendered so it works without script; the script only opens
+ * the panel in place instead of navigating.
+ */
+export function abcXyzMatrix(
+  rows: Array<{ abc: string; x: number; y: number; z: number; unclassified?: number; value: number }>,
+  options: {
+    locale?: Locale;
+    analysisId?: string;
+    articles?: MatrixArticle[];
+    cutoffs?: { abcA: number; abcB: number; xyzX: number; xyzY: number };
+  } = {},
+): string {
+  const locale = options.locale ?? "en";
+  const sv = locale === "sv";
   const cell = 128;
   const gap = 6;
   const w = cell * 3 + gap * 4;
   const h = cell * 3 + gap * 4;
   const max = Math.max(1, ...rows.flatMap((r) => [r.x, r.y, r.z]));
+  const cutoffs = options.cutoffs ?? { abcA: 0.8, abcB: 0.95, xyzX: 0.5, xyzY: 1 };
+  const articles = options.articles ?? [];
+  const base = options.analysisId ? `/app/artiklar?analys=${encodeURIComponent(options.analysisId)}` : "/app/artiklar";
+
+  const byCell = new Map<string, MatrixArticle[]>();
+  for (const article of articles) {
+    if (!article.xyz) continue;
+    const key = `${article.abc}${article.xyz}`;
+    const list = byCell.get(key) ?? [];
+    list.push(article);
+    byCell.set(key, list);
+  }
+  for (const list of byCell.values()) list.sort((a, b) => b.value - a.value);
 
   const grid = ["A", "B", "C"]
     .map((abc, row) =>
@@ -241,32 +276,101 @@ export function abcXyzMatrix(rows: Array<{ abc: string; x: number; y: number; z:
           const intensity = count / max;
           const x = gap + col * (cell + gap);
           const y = gap + row * (cell + gap);
-          return `<g class="matrix-cell${intensity >= 0.7 ? " matrix-deep" : ""}" style="--i:${row * 3 + col}">
+          const key = `${abc}${xyz}`;
+          const href = `${base}&abc=${abc}&xyz=${xyz}&sort=value`;
+          return `<a class="matrix-cell${intensity >= 0.7 ? " matrix-deep" : ""}" href="${href}" data-matrix-cell="${key}" style="--i:${row * 3 + col}">
             <rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="3" fill="var(--matrix-${Math.min(5, Math.ceil(intensity * 5))})"/>
-            <text x="${x + 12}" y="${y + 22}" class="matrix-key">${abc}${xyz}</text>
+            <text x="${x + 12}" y="${y + 22}" class="matrix-key">${key}</text>
             <text x="${x + 12}" y="${y + cell - 16}" class="matrix-count">${count}</text>
-            <title>${abc}${xyz}: ${count} artiklar</title>
-          </g>`;
+            <title>${key}: ${count}</title>
+          </a>`;
         })
         .join(""),
     )
     .join("");
 
-  return `<svg class="chart chart-matrix" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(appText(locale, "ABC och XYZ-matris"))}">
-    <title>${esc(appText(locale, "Antal artiklar per ABC- och XYZ-klass"))}</title>${grid}</svg>`;
+  const details = ["A", "B", "C"]
+    .flatMap((abc) => ["X", "Y", "Z"].map((xyz) => `${abc}${xyz}`))
+    .map((key) => {
+      const list = byCell.get(key) ?? [];
+      const actions = new Map<string, number>();
+      for (const article of list) actions.set(article.action, (actions.get(article.action) ?? 0) + 1);
+      const actionText = [...actions.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([action, n]) => `${appText(locale, actionName(action))} ${n}`)
+        .join(" · ");
+      const links = list
+        .slice(0, 6)
+        .map(
+          (article) =>
+            `<li><a href="/app/artiklar/${encodeURIComponent(article.sku)}${options.analysisId ? `?analys=${encodeURIComponent(options.analysisId)}` : ""}" data-sku="${esc(article.sku)}">${esc(article.name)}</a> <span class="mono muted">${esc(article.sku)}</span></li>`,
+        )
+        .join("");
+      const more = list.length > 6 ? `<p class="hint">${sv ? `+${list.length - 6} fler i listan` : `+${list.length - 6} more in the list`}</p>` : "";
+      return `<div class="matrix-detail" data-matrix-detail="${key}" hidden>
+        <p class="matrix-detail-head"><b>${key}</b> · ${list.length} ${sv ? "artiklar" : "items"}${actionText ? ` · ${esc(actionText)}` : ""}</p>
+        ${list.length ? `<ul class="matrix-list">${links}</ul>${more}` : `<p class="hint">${sv ? "Inga artiklar i den här rutan." : "No items in this cell."}</p>`}
+        <a class="btn btn-sm" href="${base}&abc=${key[0]}&xyz=${key[1]}&sort=value">${sv ? `Visa alla ${list.length} i Lager` : `Show all ${list.length} in Inventory`}</a>
+      </div>`;
+    })
+    .join("");
+
+  const cutText = sv
+    ? `Gränser: ABC efter kumulativ andel av försäljningsvärdet. A: andelen före artikeln < ${Math.round(cutoffs.abcA * 100)} %, B: ${Math.round(cutoffs.abcA * 100)}–${Math.round(cutoffs.abcB * 100)} %, C: resten. XYZ efter variationskoefficient, X < ${String(cutoffs.xyzX).replace(".", ",")}, Y ${String(cutoffs.xyzX).replace(".", ",")}–${String(cutoffs.xyzY).replace(".", ",")}, Z > ${String(cutoffs.xyzY).replace(".", ",")}.`
+    : `Cuts: ABC by cumulative share of sales revenue. A: share before the item < ${Math.round(cutoffs.abcA * 100)}%, B: ${Math.round(cutoffs.abcA * 100)}–${Math.round(cutoffs.abcB * 100)}%, C: the rest. XYZ by coefficient of variation, X < ${cutoffs.xyzX}, Y ${cutoffs.xyzX}–${cutoffs.xyzY}, Z > ${cutoffs.xyzY}.`;
+
+  const withoutXyz = rows
+    .filter((row) => (row.unclassified ?? 0) > 0)
+    .map((row) => `${row.abc} ${row.unclassified}`)
+    .join(", ");
+  const coverageText = withoutXyz
+    ? sv
+      ? `Artiklar utan XYZ-klass visas inte i rutorna: ${withoutXyz}.`
+      : `Items without an XYZ class are not shown in the cells: ${withoutXyz}.`
+    : "";
+
+  return `<svg class="chart chart-matrix" viewBox="0 0 ${w} ${h}" role="group" aria-label="${esc(appText(locale, "ABC och XYZ-matris"))}">
+    <title>${esc(appText(locale, "Antal artiklar per ABC- och XYZ-klass"))}</title>${grid}</svg>
+    <div class="matrix-panel" data-matrix-panel hidden>${details}
+      <p class="matrix-thresholds">${esc(cutText)}${coverageText ? ` ${esc(coverageText)}` : ""}</p>
+    </div>`;
+}
+
+function actionName(action: string): string {
+  return (
+    {
+      write_off: "Nedskrivning",
+      liquidate: "Realisera",
+      reduce: "Minska",
+      reorder: "Beställ",
+      review: "Granska",
+      ok: "OK",
+    }[action] ?? action
+  );
 }
 
 /* ---------------------------------------------------------- health map */
 
 export function healthMap(
-  items: Array<{ sku: string; name: string; score: number; value: number; action: string }>,
-  options: { width?: number; height?: number } = {},
+  items: Array<{
+    sku: string;
+    name: string;
+    score: number;
+    value: number;
+    action: string;
+    stock?: number;
+    coverDays?: number | null;
+  }>,
+  options: { width?: number; height?: number; locale?: Locale; analysisId?: string } = {},
 ): string {
+  const locale = options.locale ?? "en";
+  const sv = locale === "sv";
   const w = options.width ?? 720;
   const cols = 40;
   const size = Math.floor((w - (cols - 1) * 2) / cols);
   const rows = Math.ceil(items.length / cols);
-  const h = rows * (size + 2) + 8;
+  const h = rows * (size + 2);
   const maxValue = Math.max(1, ...items.map((i) => i.value));
 
   const squares = items
@@ -275,14 +379,47 @@ export function healthMap(
       const row = Math.floor(i / cols);
       const x = col * (size + 2);
       const y = row * (size + 2);
-      const tone = item.action === "write_off" || item.action === "liquidate" ? "dead" : item.score < 35 ? "risk" : item.score < 60 ? "watch" : "ok";
-      const opacity = 0.35 + (item.value / maxValue) * 0.65;
-      return `<rect x="${x}" y="${y}" width="${size}" height="${size}" rx="1.5" class="hm ${tone}" opacity="${opacity.toFixed(2)}" style="--i:${i % 60}"><title>${esc(item.name)} · ${Math.round(item.score)}/100 · ${fmt(item.value)} kr</title></rect>`;
+      // The square's colour is the recommended action, exactly as the legend
+      // says. A low priority score must never paint an OK item as a risk.
+      const tone =
+        item.action === "write_off" || item.action === "liquidate"
+          ? "dead"
+          : item.action === "reorder"
+            ? "risk"
+            : item.action === "reduce" || item.action === "review"
+              ? "watch"
+              : "ok";
+      // Value sets intensity, but only within a narrow band: the hue carries the
+      // action, so a large healthy square must never read as a warning.
+      const strength = 0.92 + (item.value / maxValue) * 0.08;
+      const status = appText(locale, actionName(item.action));
+      const cover = item.coverDays === null || item.coverDays === undefined ? "–" : `${fmt(item.coverDays)} ${sv ? "dagar" : "days"}`;
+      const label = `${item.name} · ${item.sku} · ${status} · ${Math.round(item.score)}/100 · ${fmt(item.value)} kr`;
+      const href = options.analysisId
+        ? `/app/artiklar/${encodeURIComponent(item.sku)}?analys=${encodeURIComponent(options.analysisId)}`
+        : `/app/artiklar/${encodeURIComponent(item.sku)}`;
+      return `<g class="hm ${tone}" role="button" tabindex="0" data-sku="${esc(item.sku)}" data-hm-sku="${esc(item.sku)}" data-hm-name="${esc(item.name)}" data-hm-status="${esc(status)}" data-hm-score="${esc(Math.round(item.score))}" data-hm-value="${esc(fmt(item.value))} kr" data-hm-stock="${esc(item.stock === undefined ? "–" : fmt(item.stock))}" data-hm-cover="${esc(cover)}" data-hm-href="${esc(href)}" aria-label="${esc(label)}" style="--i:${i % 60}">
+        <rect x="${x}" y="${y}" width="${size}" height="${size}" rx="1.5" class="hm-cell" style="--hm-v:${strength.toFixed(2)}"/>
+        <title>${esc(label)}</title>
+      </g>`;
     })
     .join("");
 
-  return `<svg class="chart chart-healthmap" viewBox="0 0 ${cols * (size + 2)} ${h}" role="img" aria-label="Lagerhälsokarta">
-    <title>En ruta per artikel, färg efter åtgärdsbehov och intensitet efter lagervärde</title>${squares}</svg>`;
+  return `<div class="hm-wrap">
+    <svg class="chart chart-healthmap" viewBox="0 0 ${cols * (size + 2)} ${h}" role="group" aria-label="${esc(appText(locale, "Lagerhälsokarta"))}">
+      <title>${esc(appText(locale, "En ruta per artikel, färg efter åtgärdsbehov och intensitet efter lagervärde"))}</title>${squares}</svg>
+    <div class="hm-panel" data-hm-panel hidden>
+      <p class="hm-panel-head"><b data-hm-name>–</b><span class="mono" data-hm-sku></span></p>
+      <dl class="hm-facts">
+        <div><dt>${sv ? "Åtgärd" : "Action"}</dt><dd data-hm-status>–</dd></div>
+        <div><dt>${sv ? "Prioritet" : "Priority"}</dt><dd data-hm-score>–</dd></div>
+        <div><dt>${sv ? "Lagervärde" : "Inventory value"}</dt><dd data-hm-value>–</dd></div>
+        <div><dt>${sv ? "Saldo" : "Stock"}</dt><dd data-hm-stock>–</dd></div>
+        <div><dt>${sv ? "Täckning" : "Coverage"}</dt><dd data-hm-cover>–</dd></div>
+      </dl>
+      <a class="btn btn-sm" data-hm-open href="#">${sv ? "Öppna artikeln" : "Open item"}</a>
+    </div>
+  </div>`;
 }
 
 /* ---------------------------------------------------------------- treemap */
@@ -385,13 +522,36 @@ function wrapLabel(text: string, maxChars: number, maxLines: number): string[] {
   return [...lines.slice(0, maxLines - 1), ellipsize(lines.slice(maxLines - 1).join(" "), maxChars)];
 }
 
-export function treemap(groups: Array<{ label: string; value: number; dead?: number }>, options: { width?: number; height?: number; format?: (n: number) => string; unit?: string; ariaLabel?: string; locale?: Locale } = {}): string {
+export function treemap(
+  groups: Array<{ label: string; value: number; dead?: number }>,
+  options: {
+    width?: number;
+    height?: number;
+    format?: (n: number) => string;
+    unit?: string;
+    ariaLabel?: string;
+    locale?: Locale;
+    /** Label for the folded remainder when there are more groups than tiles. */
+    restLabel?: string;
+    maxGroups?: number;
+  } = {},
+): string {
   const formatValue = options.format ?? fmt;
   const unit = options.unit ?? "kr";
   const w = options.width ?? 720;
-  const locale = options.locale ?? "sv";
+  const locale = options.locale ?? "en";
   const h = options.height ?? 240;
-  const visible = groups.filter((g) => g.value > 0).slice(0, 8);
+  const maxGroups = Math.max(1, options.maxGroups ?? DISPLAY.treemapGroups);
+  const positive = groups.filter((g) => g.value > 0).sort((a, b) => b.value - a.value);
+  // Dropping groups would make the tiles add up to less than the inventory value.
+  // Fold the tail into an explicit "other" group instead, so the chart reconciles
+  // with the KPI above it.
+  const restLabel = options.restLabel ?? appText(locale, "Övriga");
+  const visible = foldTail(positive, maxGroups, (tail) => ({
+    label: restLabel,
+    value: tail.reduce((a, g) => a + g.value, 0),
+    dead: tail.reduce((a, g) => a + (g.dead ?? 0), 0),
+  }));
   const total = visible.reduce((a, g) => a + g.value, 0) || 1;
   // Colour is relative to the most dead category on screen, so the ramp always
   // uses its full range instead of washing out when every category is healthy.
@@ -468,7 +628,7 @@ export function riskRadar(axes: Array<{ label: string; value: number }>, options
 /* --------------------------------------------------------------- timeline */
 
 export function valueTimeline(points: Array<{ date: string; value: number }>, options: { width?: number; height?: number; locale?: Locale } = {}): string {
-  const locale = options.locale ?? "sv";
+  const locale = options.locale ?? "en";
   if (points.length < 2) {
     return `<div class="chart-placeholder"><p>${esc(appText(locale, "Lagervärdets utveckling visas när organisationen har minst två importer."))}</p><p class="muted">${esc(appText(locale, "Importera igen om en månad. Då ritas trenden automatiskt."))}</p></div>`;
   }
@@ -482,7 +642,7 @@ export function valueTimeline(points: Array<{ date: string; value: number }>, op
   const line = points.map((p, i) => `${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
   const area = `${pad},${h - 28} ${line} ${x(points.length - 1).toFixed(1)},${h - 28}`;
   const dots = points
-    .map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.value).toFixed(1)}" r="3.5" class="tl-dot"><title>${esc(p.date.slice(0, 10))}: ${fmt(p.value)} ${appText(locale, "kr")}</title></circle>`)
+    .map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.value).toFixed(1)}" r="3.5" class="tl-dot"><title>${esc(p.date.slice(0, 16).replace("T", " "))}: ${fmt(p.value)} ${appText(locale, "kr")}</title></circle>`)
     .join("");
 
   return `<svg class="chart chart-timeline" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(appText(locale, "Lagervärdets utveckling"))}">

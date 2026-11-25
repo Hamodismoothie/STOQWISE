@@ -14,6 +14,7 @@
  */
 import { parseCsv, type ParsedCsv } from "../csv.ts";
 import { readXlsx } from "../xlsx.ts";
+import { config } from "../config.ts";
 
 export type IntegrationCategory = "file" | "erp" | "accounting" | "wms" | "ecommerce";
 export type IntegrationStatus = "available" | "requires_credentials";
@@ -168,7 +169,7 @@ export const integrations: IntegrationDefinition[] = [
     activation: [
       "Kräver att kundens SAP-team exponerar OData-tjänsten och skapar en teknisk användare.",
       "Ange bas-URL och uppgifter i serverns miljö.",
-      "Mappa växt (plant) till lagerplats i Stoqwise.",
+      "Mappa växt (plant) till lagerplats i STOQWISE.",
     ],
   }),
   erpConnector({
@@ -232,18 +233,49 @@ export function getIntegration(id: string): IntegrationDefinition | null {
   return integrations.find((i) => i.id === id) ?? null;
 }
 
+const ALLOWED_UPLOAD_EXTENSIONS = new Set([".csv", ".txt", ".tsv", ".xlsx"]);
+
+/** Keeps only the last path component and removes characters that confuse logs or headers. */
+export function safeUploadFilename(name: string): string {
+  const base = String(name || "")
+    .split(/[\\/]/)
+    .pop()!
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, 200);
+  return base || "uppladdning.csv";
+}
+
+/** Central upload policy for both the web form and the JSON API. */
+export function assertUploadAllowed(filename: string, byteLength: number): void {
+  const name = safeUploadFilename(filename).toLowerCase();
+  const ext = name.match(/\.[a-z0-9]+$/)?.[0] ?? "";
+  if (ext === ".xls") {
+    throw new Error("Formatet .xls (Excel 97) stöds inte. Spara om filen som .xlsx eller CSV.");
+  }
+  if (!ALLOWED_UPLOAD_EXTENSIONS.has(ext)) {
+    throw new Error("Filen måste vara CSV, TSV, TXT eller XLSX.");
+  }
+  if (byteLength <= 0) throw new Error("Filen är tom.");
+  if (byteLength > config.maxUploadBytes) {
+    throw new Error(`Filen är större än ${Math.round(config.maxUploadBytes / 1024 / 1024)} MB.`);
+  }
+}
+
 /** Converts an uploaded file to the importer's format using the best adapter. */
 export async function parseUpload(input: {
   bytes: Uint8Array;
   filename: string;
   integrationId?: string;
 }): Promise<PullResult> {
-  const name = input.filename.toLowerCase();
+  assertUploadAllowed(input.filename, input.bytes.byteLength);
+  const filename = safeUploadFilename(input.filename);
+  const name = filename.toLowerCase();
   const id = input.integrationId ?? (name.endsWith(".xlsx") || name.endsWith(".xls") ? "excel" : "csv");
   const integration = getIntegration(id);
   if (!integration?.pull) throw new Error(`Okänd importkälla: ${id}`);
   if (id === "excel" && name.endsWith(".xls")) {
     throw new Error("Formatet .xls (Excel 97) stöds inte. Spara om filen som .xlsx eller CSV.");
   }
-  return integration.pull({ bytes: input.bytes, filename: input.filename, credentials: process.env as IntegrationCredentials });
+  return integration.pull({ bytes: input.bytes, filename, credentials: process.env as IntegrationCredentials });
 }

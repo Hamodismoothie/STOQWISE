@@ -9,15 +9,19 @@ import { randomUUID } from "node:crypto";
 import { analyze, type AnalysisResult, type AnalysisSettings } from "./analysis.ts";
 import { buildDataset, type DatasetResult } from "./dataset.ts";
 import { detectMapping, parseMonthHeader, type DetectedMapping } from "./mapping.ts";
+import { detectIndustry, industryProfile, isIndustryId, type IndustryDetection, type IndustryId } from "./industry.ts";
 import { buildIntelligence, type IntelligenceSnapshot } from "./core/intelligence.ts";
 import { buildTemplateNarrative, type Narrative } from "./insights.ts";
+import { rebuildInputs } from "./api.ts";
 import { parseUpload } from "./integrations/index.ts";
 import { db, insertAnalysis, logEvent } from "./db.ts";
+import { config } from "./config.ts";
 import {
   finishImport,
-  limitsFor,
+  limitsForOrg,
   replaceItems,
   startImport,
+  valueHistory,
   type ItemRowInput,
 } from "./data/repo.ts";
 import type { ParsedCsv } from "./csv.ts";
@@ -29,6 +33,7 @@ export interface PreviewResult {
   sampleRows: string[][];
   rowCount: number;
   mapping: DetectedMapping;
+  industry: IndustryDetection;
   warnings: string[];
   source: string;
 }
@@ -46,6 +51,8 @@ export interface IngestInput {
   mappingOverride?: Partial<DetectedMapping["columns"]> | null;
   monthColumnIndexes?: number[] | null;
   totalSoldColumnIndex?: number | null;
+  /** Confirmed profile from the mapping step. Never rewrites row values. */
+  industry?: IndustryId | null;
 }
 
 export type IngestOutcome =
@@ -102,11 +109,12 @@ export async function preview(input: {
   if (parsed.rows.length === 0) {
     throw new Error("Filen innehåller inga datarader. Kontrollera att första raden är rubriker och att filen inte är tom.");
   }
-  if (parsed.rows.length > 500_000) {
-    throw new Error("Filen har fler än 500 000 rader. Dela upp den per lager eller år.");
+  if (parsed.rows.length > config.maxRows) {
+    throw new Error(`Filen har fler än ${config.maxRows.toLocaleString("sv-SE")} rader. Dela upp den per lager eller år.`);
   }
 
   const mapping = detectMapping(parsed.headers, parsed.rows);
+  const industry = detectIndustry(parsed.headers, parsed.rows, mapping);
   const draftId = randomUUID();
 
   db.query(
@@ -129,6 +137,7 @@ export async function preview(input: {
     sampleRows: parsed.rows.slice(0, 5),
     rowCount: parsed.rows.length,
     mapping,
+    industry,
     warnings: parsed.warnings,
     source,
   };
@@ -146,9 +155,7 @@ export function draftFor(orgId: string, draftId: string) {
 /** Full run: parse, validate, analyze, score, persist. */
 export async function ingest(input: IngestInput): Promise<IngestOutcome> {
   const importId = startImport({ orgId: input.orgId, source: input.source ?? "upload", filename: input.filename });
-  const limits = limitsFor(
-    (db.query("SELECT plan FROM organizations WHERE id = $o").get({ $o: input.orgId }) as { plan: string } | null)?.plan ?? "trial",
-  );
+  const limits = limitsForOrg(input.orgId);
 
   try {
     const { parsed, source, meta } = await parseUpload({
@@ -157,8 +164,17 @@ export async function ingest(input: IngestInput): Promise<IngestOutcome> {
       integrationId: input.integrationId,
     });
 
+    if (parsed.rows.length > config.maxRows) {
+      const message = `Filen har fler än ${config.maxRows.toLocaleString("sv-SE")} rader. Dela upp den per lager eller år.`;
+      finishImport({ id: importId, status: "failed", analysisId: null, rows: parsed.rows.length, imported: 0, skipped: 0, error: message, log: null });
+      return { ok: false, error: message, warnings: parsed.warnings, importId };
+    }
+
     const detected = detectMapping(parsed.headers, parsed.rows);
     const mapping = applyMappingOverride(parsed, detected, input);
+    const industry = isIndustryId(input.industry)
+      ? industryProfile(input.industry)
+      : industryProfile(detectIndustry(parsed.headers, parsed.rows, mapping).selected);
 
     const dataset: DatasetResult = buildDataset(parsed, mapping);
     if (dataset.errors.length > 0) {
@@ -187,15 +203,12 @@ export async function ingest(input: IngestInput): Promise<IngestOutcome> {
     };
     const result = analyze(dataset.items, settings, dataset.warnings);
 
-    const snapshots = (
-      db
-        .query(
-          `SELECT created_at AS date, json_extract(summary_json, '$.inventoryValue') AS value
-           FROM analyses WHERE org_id = $o AND status = 'ok' AND summary_json IS NOT NULL
-           ORDER BY created_at ASC LIMIT 24`,
-        )
-        .all({ $o: input.orgId }) as Array<{ date: string; value: number }>
-    ).filter((s) => typeof s.value === "number" && s.value > 0);
+    // The current analysis is inserted after this block, so add its own value as
+    // today's point. An earlier same-day analysis is replaced, keeping the
+    // trend at one point per import day.
+    const today = result.generatedAt.slice(0, 10);
+    const prior = valueHistory(input.orgId, null, 24).filter((s) => s.date.slice(0, 10) !== today);
+    const snapshots = [...prior, { date: result.generatedAt, value: result.kpis.inventoryValue }].slice(-24);
 
     const intelligence = buildIntelligence(dataset.items, result, {
       months: mapping.periodMonths || 12,
@@ -236,40 +249,14 @@ export async function ingest(input: IngestInput): Promise<IngestOutcome> {
           deadStockValue: result.kpis.deadStockValue,
           skuCount: result.kpis.skuCount,
           health: intelligence.health.score,
+          industry: industry.id,
+          industryLabel: industry.label,
+          industrySource: isIndustryId(input.industry) ? "confirmed" : "detected",
         }),
         $id: analysisId,
       });
 
-      const rows: ItemRowInput[] = intelligence.items.map((item) => ({
-        sku: item.sku,
-        name: item.name,
-        category: item.category,
-        supplier: item.supplier,
-        stock: item.stock,
-        cost: item.cost,
-        price: item.price,
-        value: item.value,
-        sold: item.soldPeriod,
-        revenue: item.revenuePeriod,
-        profit: item.profitPeriod,
-        marginPct: item.marginPct,
-        coverDays: item.coverDays,
-        turns: item.turns,
-        abc: item.abcValue,
-        xyz: item.xyz,
-        action: item.action,
-        priority: item.priorityScore,
-        extra: {
-          abcRevenue: item.abcRevenue,
-          abcProfit: item.abcProfit,
-          velocity: item.velocity,
-          marginPct: item.marginPct,
-          overstockValue: item.overstockValue,
-          reorderPoint: item.reorderPoint,
-          seasonalIndex: item.seasonalIndex,
-          anomalyCount: item.anomalyCount,
-        },
-      }));
+      const rows = itemRowsFor(intelligence.items);
       replaceItems(input.orgId, analysisId, input.warehouse ?? "Huvudlager", rows);
     });
     tx();
@@ -317,6 +304,7 @@ export async function ingestDraft(input: {
   monthColumnIndexes?: number[] | null;
   settings?: Partial<AnalysisSettings>;
   warehouse?: string;
+  industry?: IndustryId | null;
 }): Promise<IngestOutcome> {
   const draft = draftFor(input.orgId, input.draftId);
   if (!draft) return { ok: false, error: "Utkastet hittades inte eller tillhör en annan organisation.", warnings: [], importId: "" };
@@ -330,14 +318,98 @@ export async function ingestDraft(input: {
     bytes: new TextEncoder().encode(csv),
     filename: draft.filename,
     source: draft.source ?? "upload",
+    // The draft stores parsed rows, so the bytes below are CSV regardless of
+    // the original file extension. Without this override an .xlsx draft was
+    // re-fed to the XLSX reader as text and failed at the analysis step.
+    integrationId: "csv",
     mappingOverride: input.mappingOverride,
     monthColumnIndexes: input.monthColumnIndexes,
     settings: input.settings,
     warehouse: input.warehouse,
+    industry: input.industry,
   });
 
   if (outcome.ok) db.query("DELETE FROM analyses WHERE id = $id AND org_id = $o").run({ $id: input.draftId, $o: input.orgId });
   return outcome;
+}
+
+/** One mapping from the intelligence snapshot to the normalized item table.
+ * Used by the import path and by the recompute-after-deletion path so both
+ * store exactly the same columns. */
+export function itemRowsFor(items: IntelligenceSnapshot["items"]): ItemRowInput[] {
+  return items.map((item) => ({
+    sku: item.sku,
+    name: item.name,
+    category: item.category,
+    supplier: item.supplier,
+    stock: item.stock,
+    cost: item.cost,
+    price: item.price,
+    value: item.value,
+    sold: item.soldPeriod,
+    revenue: item.revenuePeriod,
+    profit: item.profitPeriod,
+    marginPct: item.marginPct,
+    coverDays: item.coverDays,
+    turns: item.turns,
+    abc: item.abcValue,
+    xyz: item.xyz,
+    action: item.action,
+    priority: item.priorityScore,
+    extra: {
+      abcRevenue: item.abcRevenue,
+      abcProfit: item.abcProfit,
+      velocity: item.velocity,
+      marginPct: item.marginPct,
+      overstockValue: item.overstockValue,
+      reorderPoint: item.reorderPoint,
+      seasonalIndex: item.seasonalIndex,
+      anomalyCount: item.anomalyCount,
+    },
+  }));
+}
+
+/**
+ * Recomputes an analysis after articles were deleted from it. The remaining
+ * rows are re-analysed with the original settings, so KPIs, classifications,
+ * purchase proposals and the normalized item table all describe the same, now
+ * smaller, data set. Nothing is left pointing at removed articles.
+ */
+export function recomputeAfterDeletion(
+  orgId: string,
+  analysisId: string,
+  removedSkus: string[],
+): { ok: boolean; remaining: number; removed: number; error?: "missing" | "empty" } {
+  const row = db
+    .query("SELECT result_json, warehouse FROM analyses WHERE id = $id AND org_id = $o AND status = 'ok'")
+    .get({ $id: analysisId, $o: orgId }) as { result_json: string; warehouse: string | null } | null;
+  if (!row) return { ok: false, remaining: 0, removed: 0, error: "missing" };
+  const result = JSON.parse(row.result_json) as AnalysisResult;
+  const removed = new Set(removedSkus);
+  const inputs = rebuildInputs(result).filter((item) => !removed.has(item.sku));
+  if (inputs.length === 0) return { ok: false, remaining: 0, removed: removedSkus.length, error: "empty" };
+
+  const next = analyze(inputs, result.settings, []);
+  const intelligence = buildIntelligence(inputs, next, { months: next.dataQuality.months });
+  const tx = db.transaction(() => {
+    replaceItems(orgId, analysisId, row.warehouse ?? "Huvudlager", itemRowsFor(intelligence.items));
+    db.query(
+      `UPDATE analyses SET rows = $r, result_json = $j, summary_json = $s WHERE id = $id AND org_id = $o`,
+    ).run({
+      $r: inputs.length,
+      $j: JSON.stringify(next),
+      $s: JSON.stringify({
+        inventoryValue: next.kpis.inventoryValue,
+        deadStockValue: next.kpis.deadStockValue,
+        skuCount: next.kpis.skuCount,
+        health: intelligence.health.score,
+      }),
+      $id: analysisId,
+      $o: orgId,
+    });
+  });
+  tx();
+  return { ok: true, remaining: inputs.length, removed: removedSkus.length };
 }
 
 /** Re-serialises stored rows so the draft path reuses the exact same importer. */

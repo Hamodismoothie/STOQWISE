@@ -148,7 +148,7 @@ export function sandboxDashboard(input: SandboxBase & { history: number[]; forec
       span: 12,
       title: t("Efterfrågan och prognos"),
       subtitle: t("Aggregerad månadsförsäljning med sex månaders framskrivning och osäkerhetsband."),
-      body: chart + `<div class="legend"><span><i style="background:var(--ink-soft)"></i>${t("Faktisk")}</span><span><i style="background:var(--signal)"></i>Prognos</span></div>`,
+      body: chart + `<div class="legend"><span><i style="background:var(--ink-soft)"></i>${t("Faktisk")}</span><span><i style="background:var(--signal)"></i>${t("Prognos")}</span></div>`,
     })}
   </div>`;
 
@@ -216,6 +216,7 @@ export function sandboxItems(input: SandboxBase & { query: Record<string, string
   </form>`;
 
   const rowsHtml = table({
+    locale,
     columns: [
       { key: "sku", label: t("Artikel"), sortable: true },
       { key: "name", label: t("Benämning"), sortable: true },

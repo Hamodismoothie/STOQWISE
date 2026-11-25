@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Live Warehouse scale bench</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: #0d1512; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  canvas { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="canvas"></canvas></div>
+<script type="module">
+  const params = new URLSearchParams(location.search);
+  const count = Number(params.get("count") || 500);
+  const soakMs = Number(params.get("soak") || 5000);
+  const started = performance.now();
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  window.__benchReady = false;
+  try {
+    const model = await fetch(`/world/.scale-bench/${count}.json`).then((response) => response.json());
+    const module = await import(`/world/app-world.js?v=bench-${Date.now()}`);
+    const world = module.createAppWorld({
+      canvas: document.getElementById("canvas"),
+      model,
+      locale: "sv",
+    });
+    world.frame();
+    window.__world = world;
+    const loadMs = performance.now() - started;
+    await sleep(4000);
+    const overview = world.renderOnce();
+    const heapStart = performance.memory ? performance.memory.usedJSHeapSize : null;
+    let detail = null;
+    let navigationMs = null;
+    let detailFps = null;
+    if (model.mode === "hierarchical") {
+      const payload = await fetch(`/world/.scale-bench/${count}-detail.json`).then((response) => response.json());
+      const target = await fetch(`/world/.scale-bench/${count}-target.json`).then((response) => response.json());
+      const expandStart = performance.now();
+      detail = { expandMs: null, id: payload.cluster.id, articles: payload.cluster.articles };
+      world.showClusterDetails(payload);
+      detail.expandMs = performance.now() - expandStart;
+      const navStart = performance.now();
+      world.focusAt(target.location, 11);
+      navigationMs = performance.now() - navStart;
+      await sleep(2500);
+      detailFps = world.renderOnce().fps;
+    }
+    await sleep(soakMs);
+    const final = world.renderOnce();
+    const heapEnd = performance.memory ? performance.memory.usedJSHeapSize : null;
+    window.__bench = {
+      count,
+      mode: model.mode,
+      loadMs: Math.round(loadMs),
+      fpsOverview: overview.fps,
+      drawCalls: overview.drawCalls,
+      triangles: overview.triangles,
+      fpsAfterSoak: final.fps,
+      detailFps,
+      detail,
+      navigationMs: navigationMs == null ? null : Math.round(navigationMs * 10) / 10,
+      heapStartMB: heapStart == null ? null : Math.round(heapStart / 1024 / 1024 * 10) / 10,
+      heapEndMB: heapEnd == null ? null : Math.round(heapEnd / 1024 / 1024 * 10) / 10,
+      articleCount: model.summary.articles,
+      clusters: model.clusters.length,
+    };
+    window.__benchReady = true;
+  } catch (error) {
+    window.__bench = { count, error: String(error && error.stack || error) };
+    window.__benchReady = true;
+  }
+</script>
+</body>
+</html>

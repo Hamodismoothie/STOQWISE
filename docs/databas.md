@@ -29,7 +29,11 @@ sqlite3 data/lagerradar.db "PRAGMA user_version; .tables"
 - **users** – e-post (unik), namn, företag, lösenordshash (scrypt), `is_platform_admin`.
 - **sessions** – tokenhash, `user_id`, utgångstid. Cookien `lr_session` är HttpOnly,
   SameSite=Lax och sätts med `Secure` när `APP_ORIGIN` är https.
-- **organizations** – namn, organisationsnummer, plan, `trial_ends_at`.
+- **organizations** – namn, organisationsnummer, plan, `trial_ends_at` samt
+  `trial_welcome_sent_at`, `trial_midpoint_sent_at`, `trial_ending_sent_at` och
+  `trial_ended_sent_at`. Provperioden är 14 dagar; markeringarna gör
+  livscykelmejlen idempotenta. Läsbart läge beräknas ur `trial_ends_at` och
+  raderar ingen data.
 - **members** – `(org_id, user_id)` unik, roll `owner|admin|analyst|viewer`.
 - **invitations** – e-post, roll, tokenhash, utgångstid, `accepted_at`.
 - **api_keys** – namn, `key_hash` (SHA-256), prefix, scopes (`read,write`),
@@ -52,6 +56,10 @@ sqlite3 data/lagerradar.db "PRAGMA user_version; .tables"
   Index `(org_id, id DESC)`. Skrivs av inloggning, import, analys, rollbyte,
   nyckelhantering, abonnemangsändring och inställningar.
 - **events** – produkttelemetri (intern): händelsenamn, metadata.
+- **mail_log** – varje utskicksförsök: mottagare, ämne, `kind`, status
+  (`sent`/`outbox`/`failed`), leverantörens id, fel och tid. Brödtext sparas
+  endast i `outbox`-läge. Trialens steg loggas som `trial_welcome`,
+  `trial_midpoint`, `trial_ending` och `trial_ended`.
 - **leads** – kontaktformulär och demo-förfrågningar.
 - **subscriptions** – plan, status, period, Stripe-referenser (valfritt).
 - **webhooks** / **webhook_deliveries** – utgående integrationer med HMAC-signatur,

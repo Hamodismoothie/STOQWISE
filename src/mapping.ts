@@ -52,7 +52,7 @@ const ALIASES: Record<FieldKey, string[]> = {
   sku: [
     "artikelnummer", "artikelnr", "art nr", "artnr", "artikel", "sku", "itemno",
     "item no", "item number", "itemcode", "item code", "produktnummer", "varunummer",
-    "kod", "id", "product code", "productcode", "article number", "artikelkod",
+    "kod", "id", "product code", "productcode", "article number", "artikelkod", "no",
   ],
   name: [
     "benamning", "benamning artikel", "artikelnamn", "namn", "name", "beskrivning",
@@ -61,7 +61,7 @@ const ALIASES: Record<FieldKey, string[]> = {
   ],
   category: [
     "kategori", "varugrupp", "produktgrupp", "grupp", "category", "avdelning",
-    "segment", "typ", "product category", "sortiment",
+    "segment", "typ", "product category", "sortiment", "categories",
   ],
   subcategory: ["underkategori", "underkategorier", "subcategory", "sub category", "undergrupp"],
   brand: ["varumarke", "varumärke", "brand", "fabrikat", "marke", "märke"],
@@ -75,7 +75,7 @@ const ALIASES: Record<FieldKey, string[]> = {
   stock: [
     "saldo", "lagersaldo", "lager", "i lager", "lagerantal", "behallning",
     "antal i lager", "stock", "on hand", "onhand", "qty", "quantity", "inventory",
-    "lagervarde antal", "fysiskt lager",
+    "lagervarde antal", "fysiskt lager", "disponibelt", "disponibelt antal", "tillgangligt antal",
   ],
   reserved: [
     "reserverat", "reserverad", "reserverat antal", "reservationer",
@@ -84,6 +84,7 @@ const ALIASES: Record<FieldKey, string[]> = {
   cost: [
     "inkopspris", "inkops pris", "kostpris", "sjalvkostnad", "cost", "cost price",
     "unit cost", "inkopspris per st", "pris in", "gav", "gvk", "lagervarde pris",
+    "kalkylkostnad", "inpris", "lagerpris", "senaste inkopspris", "kostnad",
   ],
   price: [
     "forsaljningspris", "utpris", "forsaljnings pris", "pris", "price",
@@ -101,6 +102,7 @@ const ALIASES: Record<FieldKey, string[]> = {
     "salt", "salda", "antal salda", "salda antal", "sald kvantitet", "sold",
     "units sold", "qty sold", "quantity sold", "totalt salt", "forsaljning antal",
     "forsaljning st", "antal sailda", "utlevererat antal", "volym",
+    "omsatt antal", "omsatt kvantitet", "sales qty",
   ],
   totalRevenue: [
     "forsaljning", "omsattning", "forsaljning belopp", "forsaljning kr",
@@ -108,6 +110,55 @@ const ALIASES: Record<FieldKey, string[]> = {
     "nettoomsattning", "belopp",
   ],
 };
+
+/** Fields an import cannot work without. Identity may be `sku` or `name`. */
+export const REQUIRED_HEADER_FIELDS: FieldKey[] = ["stock", "cost"];
+
+export interface HeaderCheck {
+  /** Required fields that no header matched. */
+  missing: FieldKey[];
+  /** Fields that were found, with the header that satisfied them. */
+  matched: Array<{ field: FieldKey; header: string }>;
+}
+
+/**
+ * The pre-upload check. It answers one question only: will the engine have a
+ * stock and a cost column? It is advisory, never a gate, and it uses the same
+ * aliases as the real mapping so the browser cannot promise more than the
+ * server delivers.
+ */
+export function checkHeaders(headers: string[]): HeaderCheck {
+  const fields: FieldKey[] = [...REQUIRED_HEADER_FIELDS, "sku", "name"];
+  const pairs: Array<{ field: FieldKey; index: number; header: string; score: number }> = [];
+  headers.forEach((header, index) => {
+    for (const field of fields) {
+      const score = matchScore(header, field);
+      if (score > 0) pairs.push({ field, index, header, score });
+    }
+  });
+  pairs.sort((a, b) => b.score - a.score || a.index - b.index);
+
+  const taken = new Set<number>();
+  const found = new Map<FieldKey, string>();
+  for (const pair of pairs) {
+    if (found.has(pair.field) || taken.has(pair.index) || pair.score < 0.6) continue;
+    found.set(pair.field, pair.header);
+    taken.add(pair.index);
+  }
+
+  const matched = [...found.entries()].map(([field, header]) => ({ field, header }));
+  const missing = REQUIRED_HEADER_FIELDS.filter((field) => !found.has(field));
+  if (!found.has("sku") && !found.has("name")) missing.push("sku");
+  return { missing, matched };
+}
+
+/** Alias lists for the browser-side pre-check, so the rules keep one source. */
+export function clientRules(): { required: Array<{ key: FieldKey; aliases: string[] }>; identity: string[] } {
+  return {
+    required: REQUIRED_HEADER_FIELDS.map((key) => ({ key, aliases: ALIASES[key] })),
+    identity: [...ALIASES.sku, ...ALIASES.name],
+  };
+}
 
 export interface MonthColumn {
   index: number;

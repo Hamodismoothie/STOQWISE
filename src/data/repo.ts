@@ -8,7 +8,10 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { db } from "../db.ts";
 import { categoryCandidates, planSearch, type PopulatedLanguage } from "../terminology.ts";
+import { TECHNICAL_ITEM_CAPACITY } from "../capacity.ts";
 import { defaultPricingRules, sanitizeRules, type PriceEstimate, type PricingProfile, type PricingRules } from "../pricing.ts";
+import { trialEndIso, trialState, type TrialState } from "../trial-state.ts";
+import { collapseDailyValues, type RawValuePoint } from "../core/history.ts";
 
 const now = (): string => new Date().toISOString();
 
@@ -39,6 +42,10 @@ export function can(role: Role, permission: Permission): boolean {
 
 export const roleRank: Record<Role, number> = { owner: 4, admin: 3, analyst: 2, viewer: 1 };
 
+export function isRole(value: unknown): value is Role {
+  return value === "owner" || value === "admin" || value === "analyst" || value === "viewer";
+}
+
 /* ---------------------------------------------------------------- plans */
 
 export interface PlanLimits {
@@ -51,6 +58,10 @@ export interface PlanLimits {
   copilotPerMonth: number;
   apiAccess: boolean;
   simulation: boolean;
+  /** Whether the subscription may delete imported data at all. Roles decide
+   * who inside the organisation may use it; this flag decides whether the
+   * capability exists for the plan. */
+  deleteData: boolean;
 }
 
 export const planLimits: Record<string, PlanLimits> = {
@@ -64,6 +75,7 @@ export const planLimits: Record<string, PlanLimits> = {
     copilotPerMonth: 50,
     apiAccess: false,
     simulation: true,
+    deleteData: true,
   },
   basic: {
     id: "basic",
@@ -75,6 +87,7 @@ export const planLimits: Record<string, PlanLimits> = {
     copilotPerMonth: 200,
     apiAccess: true,
     simulation: true,
+    deleteData: true,
   },
   multi: {
     id: "multi",
@@ -86,6 +99,7 @@ export const planLimits: Record<string, PlanLimits> = {
     copilotPerMonth: 1_000,
     apiAccess: true,
     simulation: true,
+    deleteData: true,
   },
   business: {
     id: "business",
@@ -97,17 +111,31 @@ export const planLimits: Record<string, PlanLimits> = {
     copilotPerMonth: 5_000,
     apiAccess: true,
     simulation: true,
+    deleteData: true,
   },
   enterprise: {
     id: "enterprise",
     name: "Enterprise",
     priceSek: 14_900,
-    maxSkus: 500_000,
+    maxSkus: TECHNICAL_ITEM_CAPACITY,
     maxUsers: 100,
     maxAnalysesPerMonth: 500,
     copilotPerMonth: 10_000,
     apiAccess: true,
     simulation: true,
+    deleteData: true,
+  },
+  internal_test: {
+    id: "internal_test",
+    name: "Internt testkonto",
+    priceSek: 0,
+    maxSkus: TECHNICAL_ITEM_CAPACITY,
+    maxUsers: 999,
+    maxAnalysesPerMonth: 1_000_000,
+    copilotPerMonth: 1_000_000,
+    apiAccess: true,
+    simulation: true,
+    deleteData: true,
   },
 };
 
@@ -124,12 +152,79 @@ export interface OrgRow {
   plan: string;
   trial_ends_at: string | null;
   settings_json: string | null;
+  kind: "customer" | "test";
+  status: "active" | "suspended";
+  locale: string;
+  limits_json: string | null;
   created_at: string;
+  trial_welcome_sent_at: string | null;
+  trial_midpoint_sent_at: string | null;
+  trial_ending_sent_at: string | null;
+  trial_ended_sent_at: string | null;
 }
 
 export interface Membership {
   org: OrgRow;
   role: Role;
+}
+
+export interface OrgEntitlements extends PlanLimits {
+  kind: "customer" | "test";
+  status: "active" | "suspended";
+  isTest: boolean;
+  sourcePlan: string;
+  trial: TrialState;
+  readOnly: boolean;
+}
+
+/** Server-side entitlement. A test tenant is recognised by the database marker
+ * `kind`, never by an email domain, request field or frontend flag. */
+export function limitsForOrg(orgId: string): OrgEntitlements {
+  const row = db
+    .query("SELECT plan, kind, status, limits_json, trial_ends_at FROM organizations WHERE id = $id")
+    .get({ $id: orgId }) as
+    | { plan: string; kind: "customer" | "test"; status: "active" | "suspended"; limits_json: string | null; trial_ends_at: string | null }
+    | null;
+  if (!row) {
+    const trial = trialState({ plan: "trial", trial_ends_at: null });
+    return { ...planLimits.trial!, kind: "customer", status: "active", isTest: false, sourcePlan: "trial", trial, readOnly: false };
+  }
+
+  const sourcePlan = planLimits[row.plan] ? row.plan : "trial";
+  let limits: PlanLimits = { ...planLimits[sourcePlan]! };
+  if (row.kind === "test") {
+    limits = { ...planLimits.internal_test!, maxSkus: TECHNICAL_ITEM_CAPACITY };
+  } else if (row.limits_json) {
+    try {
+      const overrides = JSON.parse(row.limits_json) as Partial<PlanLimits>;
+      const integer = (value: unknown, fallback: number, cap = Number.MAX_SAFE_INTEGER): number => {
+        const n = Number(value);
+        return Number.isFinite(n) && n >= 0 ? Math.min(cap, Math.floor(n)) : fallback;
+      };
+      limits = {
+        ...limits,
+        maxSkus: integer(overrides.maxSkus, limits.maxSkus, TECHNICAL_ITEM_CAPACITY),
+        maxUsers: integer(overrides.maxUsers, limits.maxUsers, 10_000),
+        maxAnalysesPerMonth: integer(overrides.maxAnalysesPerMonth, limits.maxAnalysesPerMonth, 10_000_000),
+        copilotPerMonth: integer(overrides.copilotPerMonth, limits.copilotPerMonth, 100_000_000),
+        apiAccess: overrides.apiAccess === undefined ? limits.apiAccess : Boolean(overrides.apiAccess),
+        simulation: overrides.simulation === undefined ? limits.simulation : Boolean(overrides.simulation),
+        deleteData: overrides.deleteData === undefined ? limits.deleteData : Boolean(overrides.deleteData),
+      };
+    } catch {
+      // A corrupt override must never grant more than the plan allows.
+    }
+  }
+  const trial = trialState({ plan: row.plan, trial_ends_at: row.trial_ends_at });
+  return {
+    ...limits,
+    kind: row.kind,
+    status: row.status,
+    isTest: row.kind === "test",
+    sourcePlan,
+    trial,
+    readOnly: row.kind !== "test" && row.plan === "trial" && trial.ended,
+  };
 }
 
 function slugify(name: string): string {
@@ -143,27 +238,36 @@ function slugify(name: string): string {
   return base || "foretag";
 }
 
-export function createOrganization(input: { name: string; userId: string; plan?: string }): OrgRow {
+export function createOrganization(input: { name: string; userId: string; plan?: string; locale?: "sv" | "en" }): OrgRow {
   const id = randomUUID();
   let slug = slugify(input.name);
   const exists = db.query("SELECT 1 FROM organizations WHERE slug = $s").get({ $s: slug });
   if (exists) slug = `${slug}-${id.slice(0, 4)}`;
+  const plan = input.plan && planLimits[input.plan] ? input.plan : "trial";
 
   const org: OrgRow = {
     id,
     name: input.name.trim(),
     slug,
-    plan: input.plan ?? "trial",
-    trial_ends_at: new Date(Date.now() + 14 * 86400_000).toISOString(),
+    plan,
+    trial_ends_at: trialEndIso(),
     settings_json: null,
+    kind: "customer",
+    status: "active",
+    locale: input.locale === "en" ? "en" : "sv",
+    limits_json: null,
     created_at: now(),
+    trial_welcome_sent_at: null,
+    trial_midpoint_sent_at: null,
+    trial_ending_sent_at: null,
+    trial_ended_sent_at: null,
   };
 
   const tx = db.transaction(() => {
     db.query(
-      `INSERT INTO organizations (id, name, slug, plan, trial_ends_at, settings_json, created_at)
-       VALUES ($id, $n, $s, $p, $t, NULL, $c)`,
-    ).run({ $id: org.id, $n: org.name, $s: org.slug, $p: org.plan, $t: org.trial_ends_at, $c: org.created_at });
+      `INSERT INTO organizations (id, name, slug, plan, trial_ends_at, settings_json, locale, created_at)
+       VALUES ($id, $n, $s, $p, $t, NULL, $l, $c)`,
+    ).run({ $id: org.id, $n: org.name, $s: org.slug, $p: org.plan, $t: org.trial_ends_at, $l: org.locale, $c: org.created_at });
     db.query(
       `INSERT INTO members (org_id, user_id, role, created_at) VALUES ($o, $u, 'owner', $c)`,
     ).run({ $o: org.id, $u: input.userId, $c: now() });
@@ -242,16 +346,25 @@ export function countMembers(orgId: string): number {
 
 /* --------------------------------------------------------- invitations */
 
-export function createInvitation(input: { orgId: string; email: string; role: Role; days?: number }): string {
+export function createInvitation(input: {
+  orgId: string;
+  email: string;
+  role: Role;
+  /** The inviter's interface language: mail and invitation page share it. */
+  locale?: string;
+  days?: number;
+}): string {
+  if (!isRole(input.role)) throw new Error("Ogiltig roll för inbjudan.");
   const token = randomBytes(24).toString("base64url");
   db.query(
-    `INSERT INTO invitations (id, org_id, email, role, token_hash, expires_at, created_at)
-     VALUES ($id, $o, $e, $r, $t, $x, $c)`,
+    `INSERT INTO invitations (id, org_id, email, role, locale, token_hash, expires_at, created_at)
+     VALUES ($id, $o, $e, $r, $l, $t, $x, $c)`,
   ).run({
     $id: randomUUID(),
     $o: input.orgId,
     $e: input.email.toLowerCase().trim(),
     $r: input.role,
+    $l: input.locale === "en" ? "en" : "sv",
     $t: createHash("sha256").update(token).digest("hex"),
     $x: new Date(Date.now() + (input.days ?? 7) * 86400_000).toISOString(),
     $c: now(),
@@ -267,25 +380,27 @@ export function findInvitation(token: string) {
          WHERE i.token_hash = $t AND i.accepted_at IS NULL AND i.expires_at > $n`,
       )
       .get({ $t: createHash("sha256").update(token).digest("hex"), $n: now() }) as
-      | { id: string; org_id: string; email: string; role: Role; org_name: string }
+      | { id: string; org_id: string; email: string; role: Role; org_name: string; locale: string | null }
       | null) ?? null
   );
 }
 
-export function acceptInvitation(invitationId: string, orgId: string, userId: string, role: Role): void {
+export function acceptInvitation(invitationId: string, orgId: string, userId: string, role: Role): boolean {
   const tx = db.transaction(() => {
+    const claimed = db.query("UPDATE invitations SET accepted_at = $t WHERE id = $id AND accepted_at IS NULL").run({ $t: now(), $id: invitationId });
+    if (Number((claimed as { changes?: number }).changes ?? 0) === 0) return false;
     const existing = db.query("SELECT 1 FROM members WHERE org_id = $o AND user_id = $u").get({ $o: orgId, $u: userId });
     if (!existing) {
       db.query("INSERT INTO members (org_id, user_id, role, created_at) VALUES ($o, $u, $r, $c)").run({
         $o: orgId,
         $u: userId,
-        $r: role,
+        $r: isRole(role) ? role : "viewer",
         $c: now(),
       });
     }
-    db.query("UPDATE invitations SET accepted_at = $t WHERE id = $id").run({ $t: now(), $id: invitationId });
+    return true;
   });
-  tx();
+  return tx();
 }
 
 /* -------------------------------------------------------------- api keys */
@@ -477,6 +592,15 @@ export function listImports(orgId: string, limit = 25): ImportRow[] {
     .all({ $o: orgId, $l: limit }) as ImportRow[];
 }
 
+/** The import that produced an analysis, used to trace a result back to its file. */
+export function importForAnalysis(analysisId: string, orgId: string): ImportRow | null {
+  return (
+    db
+      .query("SELECT * FROM imports WHERE analysis_id = $a AND org_id = $o ORDER BY started_at DESC LIMIT 1")
+      .get({ $a: analysisId, $o: orgId }) as ImportRow | null
+  ) ?? null;
+}
+
 /* ------------------------------------------------------- subscriptions */
 
 export function getSubscription(orgId: string) {
@@ -495,8 +619,18 @@ export function getSubscription(orgId: string) {
 }
 
 export function setPlan(orgId: string, plan: string, status = "active"): void {
+  if (!planLimits[plan]) throw new Error(`Okänd plan: ${plan}`);
   const tx = db.transaction(() => {
-    db.query("UPDATE organizations SET plan = $p WHERE id = $o").run({ $p: plan, $o: orgId });
+    if (plan === "trial") {
+      db.query(
+        `UPDATE organizations
+         SET plan = $p, trial_ends_at = $t, trial_welcome_sent_at = NULL,
+             trial_midpoint_sent_at = NULL, trial_ending_sent_at = NULL, trial_ended_sent_at = NULL
+         WHERE id = $o`,
+      ).run({ $p: plan, $t: trialEndIso(), $o: orgId });
+    } else {
+      db.query("UPDATE organizations SET plan = $p WHERE id = $o").run({ $p: plan, $o: orgId });
+    }
     const existing = db.query("SELECT 1 FROM subscriptions WHERE org_id = $o").get({ $o: orgId });
     if (existing) {
       db.query("UPDATE subscriptions SET plan = $p, status = $s, updated_at = $t WHERE org_id = $o").run({
@@ -513,6 +647,17 @@ export function setPlan(orgId: string, plan: string, status = "active"): void {
     }
   });
   tx();
+}
+
+/** Starts a fresh fourteen-day trial for an organisation that is already on
+ * the trial plan after an administrative reset. */
+export function resetTrial(orgId: string): void {
+  db.query(
+    `UPDATE organizations
+     SET plan = 'trial', trial_ends_at = $t, trial_welcome_sent_at = NULL,
+         trial_midpoint_sent_at = NULL, trial_ending_sent_at = NULL, trial_ended_sent_at = NULL
+     WHERE id = $o`,
+  ).run({ $t: trialEndIso(), $o: orgId });
 }
 
 /* ------------------------------------------------------------- scenarios */
@@ -588,9 +733,9 @@ export function appendMessage(input: {
   return row;
 }
 
-export function getConversation(orgId: string, id: string) {
+export function getConversation(orgId: string, id: string, userId: string) {
   return (
-    (db.query("SELECT * FROM conversations WHERE id = $id AND org_id = $o").get({ $id: id, $o: orgId }) as {
+    (db.query("SELECT * FROM conversations WHERE id = $id AND org_id = $o AND user_id = $u").get({ $id: id, $o: orgId, $u: userId }) as {
       id: string;
       org_id: string;
       user_id: string;
@@ -606,10 +751,10 @@ export function listMessages(conversationId: string): MessageRow[] {
   return db.query("SELECT * FROM messages WHERE conversation_id = $c ORDER BY created_at ASC").all({ $c: conversationId }) as MessageRow[];
 }
 
-export function listConversations(orgId: string, limit = 15) {
+export function listConversations(orgId: string, userId: string, limit = 15) {
   return db
-    .query("SELECT id, title, analysis_id, updated_at FROM conversations WHERE org_id = $o ORDER BY updated_at DESC LIMIT $l")
-    .all({ $o: orgId, $l: limit }) as Array<{ id: string; title: string; analysis_id: string; updated_at: string }>;
+    .query("SELECT id, title, analysis_id, updated_at FROM conversations WHERE org_id = $o AND user_id = $u ORDER BY updated_at DESC LIMIT $l")
+    .all({ $o: orgId, $u: userId, $l: limit }) as Array<{ id: string; title: string; analysis_id: string; updated_at: string }>;
 }
 
 /* ----------------------------------------------------------------- audit */
@@ -736,6 +881,87 @@ export function replaceItems(orgId: string, analysisId: string, warehouse: strin
   tx();
 }
 
+/* --------------------------------------------------------------- deletion */
+
+/** Deletion is a separate capability. A role may be allowed to delete on one
+ * plan but not on another, and a customer plan can be configured per org. */
+export function canDeleteOrgData(role: Role, limits: Pick<PlanLimits, "deleteData">): boolean {
+  return can(role, "data.delete") && limits.deleteData === true;
+}
+
+export interface DeletionImpact {
+  id: string;
+  filename: string;
+  items: number;
+  value: number;
+  imports: number;
+  createdAt: string;
+}
+
+export function analysisDeletionImpact(orgId: string, analysisId: string): DeletionImpact | null {
+  const row = db
+    .query("SELECT id, filename, created_at FROM analyses WHERE id = $id AND org_id = $o")
+    .get({ $id: analysisId, $o: orgId }) as { id: string; filename: string; created_at: string } | null;
+  if (!row) return null;
+  const stats = db
+    .query("SELECT COUNT(*) AS items, COALESCE(SUM(value), 0) AS value FROM items WHERE analysis_id = $id AND org_id = $o")
+    .get({ $id: analysisId, $o: orgId }) as { items: number; value: number };
+  const imports = db
+    .query("SELECT COUNT(*) AS n FROM imports WHERE analysis_id = $id AND org_id = $o")
+    .get({ $id: analysisId, $o: orgId }) as { n: number };
+  return { id: row.id, filename: row.filename, items: stats.items, value: stats.value, imports: imports.n, createdAt: row.created_at };
+}
+
+/** Removes one imported data set: its import log, its item rows and the
+ * analysis itself. Other organisations are untouched because every statement
+ * carries org_id. */
+export function deleteAnalysisData(orgId: string, analysisId: string): boolean {
+  let removed = 0;
+  const tx = db.transaction(() => {
+    db.query("DELETE FROM imports WHERE org_id = $o AND analysis_id = $a").run({ $o: orgId, $a: analysisId });
+    db.query("DELETE FROM items WHERE org_id = $o AND analysis_id = $a").run({ $o: orgId, $a: analysisId });
+    removed = db.query("DELETE FROM analyses WHERE org_id = $o AND id = $a").run({ $o: orgId, $a: analysisId }).changes ?? 0;
+  });
+  tx();
+  return removed > 0;
+}
+
+/** Drops one import log entry. Its analysis is deleted separately, so a log
+ * entry without an analysis can always be removed on its own. */
+export function deleteImportRow(orgId: string, importId: string): boolean {
+  return (db.query("DELETE FROM imports WHERE org_id = $o AND id = $i").run({ $o: orgId, $i: importId }).changes ?? 0) > 0;
+}
+
+export function itemDetailsFor(orgId: string, analysisId: string, skus: string[]): Array<{ sku: string; name: string; value: number }> {
+  if (!skus.length) return [];
+  const stmt = db.query(
+    "SELECT sku, name, value FROM items WHERE org_id = $o AND analysis_id = $a AND sku = $s",
+  );
+  const rows: Array<{ sku: string; name: string; value: number }> = [];
+  for (const sku of skus) {
+    const row = stmt.get({ $o: orgId, $a: analysisId, $s: sku }) as { sku: string; name: string; value: number } | null;
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+export function deletedItemsLabel(orgId: string, analysisId: string, skus: string[]): number {
+  if (!skus.length) return 0;
+  const stmt = db.query("SELECT 1 FROM items WHERE org_id = $o AND analysis_id = $a AND sku = $s");
+  return skus.reduce((sum, sku) => sum + (stmt.get({ $o: orgId, $a: analysisId, $s: sku }) ? 1 : 0), 0);
+}
+
+export function deleteItemRows(orgId: string, analysisId: string, skus: string[]): number {
+  if (!skus.length) return 0;
+  const stmt = db.query("DELETE FROM items WHERE org_id = $o AND analysis_id = $a AND sku = $s");
+  let removed = 0;
+  const tx = db.transaction(() => {
+    for (const sku of skus) removed += stmt.run({ $o: orgId, $a: analysisId, $s: sku }).changes ?? 0;
+  });
+  tx();
+  return removed;
+}
+
 export interface ItemQuery {
   q?: string;
   lang?: PopulatedLanguage;
@@ -764,12 +990,13 @@ const SORT_COLUMNS: Record<string, string> = {
 export function queryItems(orgId: string, analysisId: string, query: ItemQuery) {
   const where: string[] = ["org_id = $o", "analysis_id = $a"];
   const params: Record<string, string | number> = { $o: orgId, $a: analysisId };
+  const qText = (query.q ?? "").trim().slice(0, 200);
 
   let rankSql = "";
-  if (query.q) {
+  if (qText) {
     const lang = query.lang ?? "sv";
-    const plan = planSearch(query.q, lang);
-    const direct = query.q.trim();
+    const plan = planSearch(qText, lang);
+    const direct = qText;
     const synonyms = [...plan.synonyms, ...plan.abbreviations];
     const translations = plan.translations;
     const variants = plan.variants;
@@ -858,8 +1085,10 @@ export function queryItems(orgId: string, analysisId: string, query: ItemQuery) 
 
   const order = SORT_COLUMNS[query.sort ?? "value"] ?? "value";
   const dir = query.dir === "asc" ? "ASC" : "DESC";
-  const pageSize = Math.min(200, Math.max(1, query.pageSize ?? 50));
-  const page = Math.max(1, query.page ?? 1);
+  const requestedPageSize = Number(query.pageSize ?? 50);
+  const requestedPage = Number(query.page ?? 1);
+  const pageSize = Math.min(200, Math.max(1, Number.isFinite(requestedPageSize) ? Math.floor(requestedPageSize) : 50));
+  const page = Math.min(100_000, Math.max(1, Number.isFinite(requestedPage) ? Math.floor(requestedPage) : 1));
 
   const whereSql = where.join(" AND ");
   const aggregate = db.query(`SELECT COUNT(*) AS c, COALESCE(SUM(value), 0) AS v FROM items WHERE ${whereSql}`).get(params) as { c: number; v: number };
@@ -924,14 +1153,19 @@ export function copilotMessagesThisMonth(orgId: string): number {
 }
 
 export function valueHistory(orgId: string, excludeId: string | null, limit = 24) {
-  return db
+  // Scan a generous window, then keep one point per calendar day. Several
+  // imports on the same day describe the same business day, not extra months of
+  // history; plotting each of them produced repeated dates on the trend.
+  const scan = Math.max(limit * 8, 96);
+  const rows = db
     .query(
       `SELECT created_at AS date, json_extract(summary_json, '$.inventoryValue') AS value
        FROM analyses
        WHERE org_id = $o AND status = 'ok' AND summary_json IS NOT NULL AND ($x IS NULL OR id != $x)
-       ORDER BY created_at ASC LIMIT $l`,
+       ORDER BY created_at DESC LIMIT $l`,
     )
-    .all({ $o: orgId, $x: excludeId, $l: limit }) as Array<{ date: string; value: number }>;
+    .all({ $o: orgId, $x: excludeId, $l: scan }) as RawValuePoint[];
+  return collapseDailyValues(rows, limit);
 }
 
 /* --------------------------------------------------------- pricing workspace */

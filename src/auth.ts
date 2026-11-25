@@ -42,6 +42,18 @@ export function newSessionToken(): { token: string; tokenHash: string; expiresAt
   return { token, tokenHash, expiresAt };
 }
 
+/** One-hour, single-use password reset token. Only its hash is stored. */
+export const PASSWORD_RESET_TTL_MINUTES = 60;
+
+export function newPasswordResetToken(): { token: string; tokenHash: string; expiresAt: string } {
+  const token = randomBytes(32).toString("base64url");
+  return {
+    token,
+    tokenHash: sha256(token),
+    expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60_000).toISOString(),
+  };
+}
+
 export function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -56,7 +68,7 @@ export function startSession(userId: string): { cookie: string } {
     "SameSite=Lax",
     `Max-Age=${config.sessionTtlSeconds}`,
   ];
-  if (config.isProduction) attrs.push("Secure");
+  if (config.isProduction || config.appOrigin.startsWith("https://")) attrs.push("Secure");
   return { cookie: attrs.join("; ") };
 }
 
@@ -83,11 +95,21 @@ export function currentUser(req: Request): UserRow | null {
   return findUserById(session.user_id);
 }
 
+/** When the session behind this request was created, in epoch ms. */
+export function sessionStartedAt(req: Request): number | null {
+  const token = readCookie(req, SESSION_COOKIE);
+  if (!token) return null;
+  const session = findSession(sha256(token));
+  if (!session) return null;
+  const started = Date.parse(session.created_at);
+  return Number.isFinite(started) ? started : null;
+}
+
 export function endSession(req: Request): string {
   const token = readCookie(req, SESSION_COOKIE);
   if (token) deleteSession(sha256(token));
   const attrs = [`${SESSION_COOKIE}=`, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"];
-  if (config.isProduction) attrs.push("Secure");
+  if (config.isProduction || config.appOrigin.startsWith("https://")) attrs.push("Secure");
   return attrs.join("; ");
 }
 
@@ -98,14 +120,14 @@ export function endSession(req: Request): string {
  */
 export function isSameOrigin(req: Request): boolean {
   const origin = req.headers.get("origin");
-  if (!origin) {
-    // Non-browser clients (curl, tests) have no Origin header. Allow them only
-    // when the request is not carrying a session cookie-free cross-site form.
-    return true;
-  }
-  const host = req.headers.get("host");
+  const referer = req.headers.get("referer");
+  const source = origin ?? referer;
+  // State-changing browser requests must prove their origin. Accepting a
+  // missing header made the check optional for any client that simply omitted
+  // it, which is exactly what a cross-site form can do.
+  if (!source || origin === "null") return false;
   try {
-    return new URL(origin).host === host;
+    return new URL(source).origin === new URL(config.appOrigin).origin;
   } catch {
     return false;
   }

@@ -36,6 +36,19 @@ export interface CopilotTable {
   align?: Array<"left" | "right">;
 }
 
+/**
+ * The six auditable parts of a recommendation. They are filled from computed
+ * facts, never generated prose, so the UI can show the basis next to the action.
+ */
+export interface DecisionBrief {
+  identified: string;
+  why: string;
+  data: string;
+  action: string;
+  effect: string;
+  uncertainty: string;
+}
+
 export interface CopilotAnswer {
   intent: string;
   question: string;
@@ -49,6 +62,7 @@ export interface CopilotAnswer {
   /** Carried into the conversation so follow-ups can refine instead of restart. */
   params: Record<string, string | number>;
   grounded: boolean;
+  brief: DecisionBrief;
 }
 
 export interface ConversationTurn {
@@ -117,18 +131,32 @@ function answer(
   text: string,
   rest: Partial<CopilotAnswer> & { params?: Record<string, string | number> } = {},
 ): CopilotAnswer {
+  const facts = rest.facts ?? [];
+  const sources = rest.sources ?? [];
+  const notes = rest.notes ?? [];
+  const brief: DecisionBrief = rest.brief ?? {
+    identified: text.split(/(?<=[.!?])\s/)[0] ?? text,
+    why: facts.length ? facts.map((fact) => `${fact.label}: ${fact.value}`).join(" · ") : "Se det beräknade underlaget i svaret.",
+    data: sources.length ? sources.join(" · ") : "Analysmotorn och den importerade datamängden.",
+    action: rest.followUps?.[0] ?? "Granska artikeln och bekräfta åtgärden innan beslut.",
+    effect: facts.length ? facts.map((fact) => `${fact.label}: ${fact.value}`).join(" · ") : "Ingen kvantifierad effekt anges för den här frågan.",
+    uncertainty: notes.length
+      ? notes.join(" ")
+      : "Siffrorna är deterministiska beräkningar från underlaget. Effekter är uppskattningar och ska bekräftas mot avtal och verkligt utfall.",
+  };
   return {
     intent,
     question,
     answer: text,
-    facts: rest.facts ?? [],
+    facts,
     table: rest.table ?? null,
     followUps: rest.followUps ?? [],
-    sources: rest.sources ?? [],
+    sources,
     confidence: rest.confidence ?? "high",
-    notes: rest.notes ?? [],
+    notes,
     params: rest.params ?? {},
     grounded: true,
+    brief,
   };
 }
 
@@ -232,6 +260,14 @@ const intents: Intent[] = [
           followUps: ["Vad bör vi beställa nu?", "Simulera 20 % högre efterfrågan", "Visa inaktivt lager i stället"],
           sources: ["analysis.items[].coverDays", "forecast.supplyPlan"],
           confidence: risky.length > 0 ? "high" : "medium",
+          brief: {
+            identified: `${risky.length} artiklar har kortare täckning än sin ledtid.`,
+            why: "Om täckningen är kortare än ledtiden hinner en ny leverans inte fram innan lagret tar slut.",
+            data: "Saldo, reserverat lager, ledtid, månadshistorik och prognosens bristrisk.",
+            action: "Beställ de mest utsatta artiklarna först och kontrollera MOQ och leverantörens ledtid.",
+            effect: `Cirka ${sek(value)} i försäljning riskerar att utebli under en ledtid om ingen åtgärd görs.`,
+            uncertainty: "Prognosens bristrisk bygger på historisk variation och antagen leveransprecision. Verklig efterfrågan kan avvika.",
+          },
           params: { limit: params.limit },
         },
       );
@@ -307,6 +343,14 @@ const intents: Intent[] = [
           },
           followUps: ["Visa bristrisken i procent", "Simulera längre ledtid", "Exportera förslaget"],
           sources: ["forecast.supplyPlan.reorderPoint", "forecast.supplyPlan.orderQuantity (EOQ)"],
+          brief: {
+            identified: `${rows.length} artiklar ligger nära eller under beställningspunkt.`,
+            why: "Utan beställning fortsätter försäljningen att minska saldot under säkerhetslagret.",
+            data: "Aktuellt saldo, ledtid, säkerhetslager, beställningspunkt, prognos och MOQ.",
+            action: "Godkänn de föreslagna kvantiteterna eller justera mot leverantörens avtal innan beställning.",
+            effect: `Ordern om ${rows.reduce((a, r) => a + r.plan.orderQuantity, 0)} enheter motsvarar ${sek(totalValue)} i varuvärde.`,
+            uncertainty: "EOQ antar 350 kr per order och 22 % lagerhållningsränta. MOQ och pris kan ändra den ekonomiska kvantiteten.",
+          },
           params: { limit: params.limit },
         },
       );
@@ -487,6 +531,14 @@ const intents: Intent[] = [
           },
           followUps: ["Visa de 20 högst prioriterade artiklarna", "Hur mycket kan frigöras?", "Exportera åtgärdslistan"],
           sources: ["analysis.recommendations", "intelligence.priorities"],
+          brief: {
+            identified: recs.length ? `${recs.length} åtgärder med beräknad ekonomisk effekt.` : "Inga åtgärder med materiell effekt hittades.",
+            why: recs.length ? "De största posterna är kapital som inte rör sig i takt med efterfrågan eller riskerar att ta slut." : "Lagret ligger inom de definierade styrgränserna.",
+            data: "Kapitalbindning, inaktivt lager, överlager, bristrisk, marginal och artikelprioritet.",
+            action: recs.length ? "Arbeta igenom åtgärderna i prioritetsordning och öppna artikeln för att se beräkningen." : "Ingen åtgärd krävs; följ upp vid nästa import.",
+            effect: recs.length ? `${sek(recs.reduce((a, r) => a + r.impactLow, 0))}–${sek(recs.reduce((a, r) => a + r.impactHigh, 0))} i uppskattad effekt.` : "0 kr beräknad effekt.",
+            uncertainty: "Effektintervallen bygger på realisationsgrader och antaganden som visas i analysen. De är uppskattningar, inte bokförda värden.",
+          },
           params: { limit: params.limit },
         },
       );
@@ -706,7 +758,7 @@ export function ask(
         question,
         `${item.name} (${item.sku}) har ${Math.round(item.stock)} enheter i lager till ett värde av ${sek(item.value)}. ` +
           `Omsättningen är ${formatNumber(item.turns, 2)} gånger per år och täckningen ${item.coverDays === null ? "obefintlig" : `${item.coverDays} dagar`}. ` +
-          `Klassning: ABC ${item.abcValue}/${item.abcRevenue} och XYZ ${item.xyz ?? "saknas"}. ` +
+          `Klassning: ABC ${item.abcRevenue} (försäljningsvärde), ABC ${item.abcValue} (lagervärde) och XYZ ${item.xyz ?? "saknas"}. ` +
           (plan
             ? `Prognosen pekar på ${formatNumber(plan.forecastMonthly, 1)} enheter per månad, en beställningspunkt på ${Math.round(plan.reorderPoint)} och en rekommenderad order på ${plan.orderQuantity} enheter.`
             : "Artikeln saknar månadshistorik, så någon prognos kan inte göras."),
@@ -715,10 +767,18 @@ export function ask(
             { label: "Lagervärde", value: sek(item.value) },
             { label: "Omsättning", value: `${formatNumber(item.turns, 2)} ggr/år` },
             { label: "Marginal", value: item.marginPct === null ? "saknas" : pctf(item.marginPct) },
-            { label: "ABC/XYZ", value: `${item.abcValue} / ${item.xyz ?? "–"}` },
+            { label: "ABC/XYZ", value: `${item.abcRevenue} / ${item.xyz ?? "–"}` },
           ],
           followUps: [`Prognos för ${item.sku}`, "Visa inaktivt lager", "Vad bör vi beställa?"],
           sources: ["intelligence.items", "forecast.supplyPlan"],
+          brief: {
+            identified: `${item.name} (${item.sku}) har ${Math.round(item.stock)} enheter i lager och ${item.coverDays ?? 0} dagars täckning.`,
+            why: item.stockoutRisk ? "Täckningen är kortare än ledtiden." : item.overstockQty > 0 ? "Lagret är högre än ledtid och efterfrågan motiverar." : "Artikeln ligger inom sina styrgränser.",
+            data: "Saldo, inköpspris, försäljningspris, ledtid, MOQ, månadshistorik och prognos.",
+            action: plan ? `Beställningspunkt ${Math.round(plan.reorderPoint)} och rekommenderad order ${plan.orderQuantity} enheter vid påfyllning.` : "Komplettera månadshistorik för att få beställningspunkt.",
+            effect: plan ? `Ordern motsvarar ${sek(plan.orderQuantity * item.cost)} i varuvärde.` : "Ingen order beräknad.",
+            uncertainty: "Marginal och orderkvantitet bygger på angivna priser och antaganden. Kontrollera mot aktuellt avtal.",
+          },
           params: { sku: item.sku },
         },
       );
@@ -742,9 +802,11 @@ export function ask(
  */
 export async function polishWithAi(
   answerIn: CopilotAnswer,
-  config: { provider: string; apiKey: string; model: string; baseUrl: string },
+  config: { provider: string; apiKey: string; model: string; baseUrl: string; dataProcessingApproved: boolean },
 ): Promise<CopilotAnswer> {
-  if (!config.apiKey || config.provider === "none") return answerIn;
+  // A key is not consent. External processing stays off until the operator has
+  // explicitly confirmed a DPA/transfer basis with AI_DATA_PROCESSING_APPROVED.
+  if (!config.apiKey || config.provider === "none" || !config.dataProcessingApproved) return answerIn;
 
   const allowed = [answerIn.answer, ...answerIn.facts.map((f) => `${f.label} ${f.value}`)];
   const prompt = [

@@ -2,7 +2,7 @@
 
 Dokumentet listar vad som måste fyllas i av grundaren innan integritetspolicy,
 villkor och kundavtal kan betraktas som juridiskt granskade. Ingen av punkterna
-är påhittad i webbplatsens texter — de hänvisas i stället till "på begäran" eller
+är påhittad i webbplatsens texter: de hänvisas i stället till "på begäran" eller
 till kundavtalet.
 
 ## Krävs från grundaren
@@ -23,7 +23,7 @@ till kundavtalet.
 
 Ingen e-postadress publiceras förrän `BRAND_EMAIL_DOMAIN` är satt till en domän
 bolaget äger. Utan variabeln visar sidor, PDF:er och fakturaunderlag ingen
-adress alls — kontakt sker via formuläret — så sajten kan aldrig peka på en
+adress alls. Kontakt sker via formuläret, så sajten kan aldrig peka på en
 brevlåda vi inte kontrollerar. Det finns ingen reservdomän i koden.
 
 När domänen är satt används `hello@` (publik kontakt och rapporter), `privacy@`
@@ -35,7 +35,7 @@ testade innan variabeln sätts i drift.
 - Session-cookie är den enda cookien; ingen analys- eller annonsspårning.
 - Rådatafiler lagras inte, endast tolkade rader och beräknade resultat.
 - AI-funktioner är avstängda som standard och skickar aggregerade mått, inte artikelrader.
-- Användaren kan exportera och radera all data i inställningarna.
+- Användaren kan exportera hela organisationens data, radera hela organisationen som ägare och radera sitt eget konto i inställningarna. Medlemskonton kan raderas utan att organisationens analyser försvinner; analyserna flyttas till en annan aktiv medlem.
 - Ansvar är begränsat till avgifterna för de senaste tolv månaderna.
 
 ## Kvar att juridiskt granska

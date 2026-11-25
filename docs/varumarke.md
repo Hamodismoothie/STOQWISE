@@ -1,4 +1,4 @@
-# Varumärke — Stoqwise
+# Varumärke: Stoqwise
 
 Riktlinjer för hur Stoqwise ser ut, låter och rör sig. Dokumentet är normativt:
 avvikelser ska vara medvetna och motiverade, inte ett resultat av att en komponent
@@ -82,7 +82,7 @@ Regler:
 - Rubriker sätts med négativ tracking (`-0.02em` till `-0.035em`) och line-height
   1,02–1,1. Brödtext har 1,6.
 - Versala mono-etiketter: 10–11 px, `+0.12em` till `+0.16em`, `--ink-muted`.
-  De är metadata, aldrig innehåll — en hel mening sätts aldrig i versaler.
+  De är metadata, aldrig innehåll: en hel mening sätts aldrig i versaler.
 - Siffror är högerställda i tabeller och använder tabular figures. Belopp skrivs
   med tunt mellanslag som tusentalsavgränsare (`6 618 210 kr`), decimaler med
   komma (`3,30`).
@@ -116,7 +116,7 @@ Regler:
 - **Mörkt läge:** papper → `#14150F`, bläck → `#EFE9DA`, koppar ljusas till
   `#C8794F` för att behålla 4,5:1 på mörk yta. Ytor får aldrig ren svart.
 - **Kontrast:** all text ska nå 4,5:1, stora rubriker 3:1. Accentfärg används
-  aldrig som enda bärare av betydelse — etikett eller form följer med.
+  aldrig som enda bärare av betydelse, etikett eller form följer med.
 
 ---
 
@@ -127,7 +127,7 @@ Regler:
   `--rule`; en viktig sektion av en 1 px linje i `--ink`.
 - Hörnradie: 2 px på inmatningsfält och knappar, 0 på paneler och tabeller.
 - **Folio:** varje navigationspost har ett tvåsiffrigt nummer (01–11) satt i mono.
-  Numret är navigationens ikonografi — aldrig i kombination med en ikon.
+  Numret är navigationens ikonografi, aldrig i kombination med en ikon.
 - **Asymmetri är regel:** en sida får ha en tung vänsterkolumn och en lätt
   marginalnot. Layouten upprepas inte mellan sidor; dashboarden är tät,
   landningen är rymlig, prognosen är en enda stor platta.
@@ -140,7 +140,7 @@ Regler:
 
 - En linje, 1,5 px, inga fyllda ytor, inga rundade ändar utom där formen kräver.
 - 24 px rutnät, optisk centrering. Ikoner används bara där de ersätter en
-  förklarande text (ladda ner, ladda upp, stäng) — aldrig som dekoration i
+  förklarande text (ladda ner, ladda upp, stäng), aldrig som dekoration i
   rubriker eller menyer.
 - Riktningen är teknisk ritning, inte vardagsikon: pilen är en streckpil med
   öppen skänkel, nedladdning är en linje mot en baslinje. Inga emoji.

@@ -7,6 +7,7 @@ import {
   formatDate,
   formatSek,
   localeFromCookie,
+  resolveLocale,
   safeNext,
   strings,
 } from "../src/i18n.ts";
@@ -30,6 +31,7 @@ describe("språkval", () => {
     expect(localeFromCookie("lr_lang=sv")).toBe("sv");
     expect(localeFromCookie("a=b; lr_lang=sv; c=d")).toBe("sv");
     expect(localeFromCookie("lr_lang=de")).toBe(DEFAULT_LOCALE);
+    expect(localeFromCookie("lr_lang=en-XA")).toBe(DEFAULT_LOCALE);
     expect(localeFromCookie("lr_lang=sv%20")).toBe("sv");
     expect(localeFromCookie(null)).toBe(DEFAULT_LOCALE);
   });
@@ -40,6 +42,15 @@ describe("språkval", () => {
     expect(cookie).toContain("Path=/");
     expect(cookie).toContain("Max-Age=31536000");
     expect(cookie).toContain("SameSite=Lax");
+  });
+
+  test("resolvern prioriterar cookie, användare, organisation och fallback", () => {
+    expect(resolveLocale({ cookie: "lr_lang=en", userLocale: "sv", orgLocale: "sv", fallback: "sv" })).toBe("en");
+    expect(resolveLocale({ userLocale: "en", orgLocale: "sv", fallback: "sv" })).toBe("en");
+    expect(resolveLocale({ userLocale: null, orgLocale: "en", fallback: "sv" })).toBe("en");
+    expect(resolveLocale({ userLocale: "de", orgLocale: "en", fallback: "sv" })).toBe("en");
+    expect(resolveLocale({ fallback: "sv" })).toBe("sv");
+    expect(resolveLocale({ cookie: "lr_lang=de" })).toBe(DEFAULT_LOCALE);
   });
 
   test("returadressen får inte lämna sajten", () => {
@@ -82,7 +93,8 @@ describe("katalog", () => {
   test("endast kompletta språk är valbara", () => {
     const available = LOCALES.filter((l) => l.available).map((l) => l.code);
     expect(available).toEqual(["en", "sv"]);
-    expect(LOCALES.length).toBe(13);
+    expect(LOCALES.length).toBe(14);
+    expect(LOCALES.find((l) => l.code === "en-XA")?.available).toBe(false);
   });
 });
 

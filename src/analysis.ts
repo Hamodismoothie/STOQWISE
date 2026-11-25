@@ -9,6 +9,15 @@
  *     a single promise.
  */
 import type { ItemInput } from "./dataset.ts";
+import { CLASS_CUTOFFS, RELEASE_RATES } from "./tuning.ts";
+import {
+  CLASSIFICATION_VERSION,
+  classifyAbc,
+  evaluateXyz,
+  summarizeClassification,
+  XYZ_MIN_MONTHS,
+  type XyzEvaluation,
+} from "./core/classification.ts";
 
 export type AbcClass = "A" | "B" | "C";
 export type XyzClass = "X" | "Y" | "Z";
@@ -58,6 +67,8 @@ export interface AnalyzedItem {
   monthsSinceLastSale: number | null;
   coverDays: number | null;
   leadTimeDays: number;
+  /** Minimum order quantity from the item record, if the source provides it. */
+  moq?: number | null;
   safetyStock: number;
   reorderPoint: number;
   overstockQty: number;
@@ -65,6 +76,14 @@ export interface AnalyzedItem {
   stockoutRisk: boolean;
   abc: AbcClass;
   xyz: XyzClass | null;
+  // Optional so stored results from before the reason fields still type-check;
+  // the UI treats a missing reason as "no history".
+  /** Coefficient of variation behind the XYZ class, null when not computable. */
+  xyzCv?: number | null;
+  /** Complete monthly observations used for XYZ. */
+  xyzMonths?: number;
+  /** Why an article has no XYZ class. `ok` means it has one. */
+  xyzReason?: "ok" | "no_history" | "insufficient_history" | "zero_demand" | "missing_values";
   action: ItemAction;
   actionValue: number;
 }
@@ -87,6 +106,8 @@ export interface Recommendation {
 
 export interface AnalysisResult {
   generatedAt: string;
+  /** Version of the ABC/XYZ rules that produced this result. */
+  classificationVersion?: string;
   settings: AnalysisSettings;
   currency: "SEK";
   kpis: {
@@ -100,10 +121,19 @@ export interface AnalysisResult {
     slowMoverValue: number;
     slowMoverCount: number;
     annualCogs: number;
+    /** Sales revenue for the analyzed period (units × selling price). */
+    salesValue: number;
+    /** Cost of goods sold for the analyzed period (units × purchase cost). */
+    cogsPeriod: number;
+    grossProfit: number;
+    grossMarginPct: number;
     turns: number;
     daysOfInventory: number | null;
     potentialReleaseLow: number;
     potentialReleaseHigh: number;
+    /** Blended realisation rate behind the range, as a percentage. */
+    releaseRateLow: number;
+    releaseRateHigh: number;
     capitalCostAnnual: number;
     stockoutRiskCount: number;
     stockoutRiskValue: number;
@@ -113,7 +143,18 @@ export interface AnalysisResult {
   aging: AgingBucket[];
   abc: Array<{ class: AbcClass; count: number; value: number; revenue: number; revenueShare: number }>;
   xyz: Array<{ class: XyzClass; count: number }> | null;
-  matrix: { abc: AbcClass; x: number; y: number; z: number }[] | null;
+  /** Articles with stock but no demand history: no X/Y/Z class by design. */
+  xyzUnclassified: number;
+  /** Why articles are outside X/Y/Z, so the UI can explain it instead of guessing. */
+  xyzCoverage: {
+    minMonths: number;
+    classified: number;
+    noHistory: number;
+    insufficientHistory: number;
+    zeroDemand: number;
+    missingValues: number;
+  };
+  matrix: { abc: AbcClass; x: number; y: number; z: number; unclassified: number }[] | null;
   /** Every analyzed article. The top lists below are slices of this array. */
   items: AnalyzedItem[];
   topCapital: AnalyzedItem[];
@@ -125,18 +166,33 @@ export interface AnalysisResult {
   dataQuality: { warnings: string[]; months: number; hasMonthly: boolean; hasPrice: boolean };
 }
 
-// Keyed by toFixed(2), because 0.9.toFixed(2) is "0.90" - a mismatch here would
-// silently fall back to the 95 % z-value for every caller.
-const Z_BY_SERVICE: Record<string, number> = {
-  "0.90": 1.2816,
-  "0.95": 1.6449,
-  "0.98": 2.0537,
-  "0.99": 2.3263,
-};
-
+/**
+ * Inverse standard-normal CDF (Acklam's rational approximation, relative error
+ * below 1.15e-9). A lookup table is tempting, but it silently maps every
+ * unlisted service level (for example 92 %) to 95 %, which changes safety stock
+ * without telling the user. This computes the factor for the requested level.
+ */
 export function zScore(serviceLevel: number): number {
-  const key = serviceLevel.toFixed(2);
-  return Z_BY_SERVICE[key] ?? 1.6449;
+  const p = serviceLevel;
+  if (!(p > 0 && p < 1)) return 1.6448536269514722;
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+  const low = 0.02425;
+  const high = 1 - low;
+  if (p < low) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0]! * q + c[1]!) * q + c[2]!) * q + c[3]!) * q + c[4]!) * q + c[5]!) / ((((d[0]! * q + d[1]!) * q + d[2]!) * q + d[3]!) * q + 1);
+  }
+  if (p > high) {
+    const q = Math.sqrt(-2 * Math.log(1 - p));
+    return -(((((c[0]! * q + c[1]!) * q + c[2]!) * q + c[3]!) * q + c[4]!) * q + c[5]!) / ((((d[0]! * q + d[1]!) * q + d[2]!) * q + d[3]!) * q + 1);
+  }
+  const q = p - 0.5;
+  const r = q * q;
+  return (((((a[0]! * r + a[1]!) * r + a[2]!) * r + a[3]!) * r + a[4]!) * r + a[5]!) * q /
+    (((((b[0]! * r + b[1]!) * r + b[2]!) * r + b[3]!) * r + b[4]!) * r + 1);
 }
 
 function mean(values: number[]): number {
@@ -188,7 +244,13 @@ export function analyze(
       monthsSinceLastSale = lastIndex === -1 ? monthly.length : lastIndex;
     }
 
-    const safetyStock = sigmaMonthly > 0 ? z * sigmaMonthly * Math.sqrt(leadTimeDays / daysPerMonth) : 0;
+    // SERV1: combine demand variability over the lead time with lead-time
+    // variability when the item record provides it. Without a lead-time sigma
+    // the expression is the demand-only case, which is reported as an assumption.
+    const demandSigma = sigmaMonthly > 0 ? sigmaMonthly * Math.sqrt(leadTimeDays / daysPerMonth) : 0;
+    const leadTimeSigma = Math.max(0, item.leadTimeSigmaDays ?? 0);
+    const sigmaDuringLeadTime = Math.hypot(demandSigma, avgDailyDemand * leadTimeSigma);
+    const safetyStock = z * sigmaDuringLeadTime;
     const reorderPoint = avgDailyDemand * leadTimeDays + safetyStock;
     const overstockQty = Math.max(
       0,
@@ -217,42 +279,27 @@ export function analyze(
     };
   });
 
-  // ------------------------------------------------------------- ABC (value)
-  const revenueTotal = base.reduce((a, b) => a + b.revenuePeriod, 0);
-  const sortedByRevenue = [...base].sort((a, b) => b.revenuePeriod - a.revenuePeriod);
-  const abcMap = new Map<string, AbcClass>();
-  let cumulative = 0;
-  for (const row of sortedByRevenue) {
-    // Classification uses the share accumulated *before* this article, so the
-    // article that crosses the 80 % line still belongs to A. Classifying on the
-    // share after would leave a dominant single article in class B.
-    const cls: AbcClass = cumulative < 0.8 ? "A" : cumulative < 0.95 ? "B" : "C";
-    abcMap.set(row.item.sku, cls);
-    const share = revenueTotal > 0 ? row.revenuePeriod / revenueTotal : 0;
-    cumulative += share;
-  }
+  // --------------------------------------------------- ABC (sales revenue)
+  // The ranker is shared with the decision layer, so the matrix on the dashboard
+  // and the ABC filter on the article list describe the same population.
+  const abcMap = classifyAbc(base.map((row) => ({ sku: row.item.sku, measure: row.revenuePeriod })));
 
   // -------------------------------------------------------------- XYZ (CV)
-  const hasMonthly = base.every((b) => b.monthlyDemand !== null) && months >= 6;
   const xyzMap = new Map<string, XyzClass>();
-  if (hasMonthly) {
-    for (const row of base) {
-      const values = row.monthlyDemand!;
-      const m = mean(values);
-      const sd = stdev(values);
-      // No demand history means no demand classification. Labelling an item Z
-      // because it never sold conflates "inactive" with "volatile demand".
-      if (m > 0) {
-        const cv = sd / m;
-        xyzMap.set(row.item.sku, cv < 0.5 ? "X" : cv <= 1 ? "Y" : "Z");
-      }
-    }
+  const xyzEvaluations = new Map<string, XyzEvaluation>();
+  for (const row of base) {
+    const evaluation = evaluateXyz(row.monthlyDemand, XYZ_MIN_MONTHS);
+    xyzEvaluations.set(row.item.sku, evaluation);
+    if (evaluation.xyz) xyzMap.set(row.item.sku, evaluation.xyz);
   }
+  // A single article without history must not disable XYZ for the whole file.
+  const hasMonthly = xyzMap.size > 0;
 
   // ------------------------------------------------------------- classification
   const analyzed: AnalyzedItem[] = base.map((row) => {
     const abc = abcMap.get(row.item.sku) ?? "C";
     const xyz = xyzMap.get(row.item.sku) ?? null;
+    const xyzEvaluation = xyzEvaluations.get(row.item.sku)!;
 
     // Inactive stock: no sales inside the inactive-stock window.
     const windowMonths = Math.max(1, Math.round(settings.deadStockDays / daysPerMonth));
@@ -314,6 +361,7 @@ export function analyze(
       monthsSinceLastSale: row.monthsSinceLastSale,
       coverDays: row.coverDays === null ? null : round(row.coverDays, 0),
       leadTimeDays: round(row.leadTimeDays, 0),
+      moq: row.item.moq ?? null,
       safetyStock: round(row.safetyStock, 1),
       reorderPoint: round(row.reorderPoint, 1),
       overstockQty: round(row.overstockQty, 1),
@@ -321,6 +369,9 @@ export function analyze(
       stockoutRisk: row.stockoutRisk,
       abc,
       xyz,
+      xyzCv: xyzEvaluation.cv === null ? null : round(xyzEvaluation.cv, 3),
+      xyzMonths: xyzEvaluation.months,
+      xyzReason: xyzEvaluation.reason,
       action,
       actionValue: round(actionValue, 2),
     };
@@ -330,6 +381,8 @@ export function analyze(
   const inventoryValue = analyzed.reduce((a, i) => a + i.value, 0);
   const stockUnits = analyzed.reduce((a, i) => a + i.stock, 0);
   const periodCogs = analyzed.reduce((a, i) => a + i.soldPeriod * i.cost, 0);
+  const salesValue = analyzed.reduce((a, i) => a + i.revenuePeriod, 0);
+  const grossProfit = salesValue - periodCogs;
   const annualCogs = (periodCogs / months) * 12;
   const turns = inventoryValue > 0 ? annualCogs / inventoryValue : 0;
   const daysOfInventory = turns > 0 ? 365 / turns : null;
@@ -345,12 +398,18 @@ export function analyze(
   const stockoutItems = analyzed.filter((i) => i.stockoutRisk);
 
   // Realisation rates are deliberately conservative and clearly labelled.
-  const DEAD_LOW = 0.25;
-  const DEAD_HIGH = 0.55;
-  const OVER_LOW = 0.15;
-  const OVER_HIGH = 0.35;
+  const DEAD_LOW = RELEASE_RATES.deadLow;
+  const DEAD_HIGH = RELEASE_RATES.deadHigh;
+  const OVER_LOW = RELEASE_RATES.overLow;
+  const OVER_HIGH = RELEASE_RATES.overHigh;
   const potentialReleaseLow = deadStockValue * DEAD_LOW + overstockValue * OVER_LOW;
   const potentialReleaseHigh = deadStockValue * DEAD_HIGH + overstockValue * OVER_HIGH;
+  // The headline rate depends on the mix: dead stock releases at 25–55 %, overstock
+  // at 15–35 %. Reporting a fixed "25–55 %" next to a range built only from
+  // overstock would overstate the assumption, so the rate is derived from the data.
+  const releaseBase = deadStockValue + overstockValue;
+  const releaseRateLow = releaseBase > 0 ? (potentialReleaseLow / releaseBase) * 100 : 0;
+  const releaseRateHigh = releaseBase > 0 ? (potentialReleaseHigh / releaseBase) * 100 : 0;
 
   const agingBuckets: AgingBucket[] = [
     { label: "Aktiv (sålt senaste 90 d)", count: 0, value: 0 },
@@ -374,37 +433,7 @@ export function analyze(
     agingBuckets[idx]!.value = round(agingBuckets[idx]!.value + item.value, 2);
   }
 
-  const abcClasses: AbcClass[] = ["A", "B", "C"];
-  const abc = abcClasses.map((cls) => {
-    const rows = analyzed.filter((i) => i.abc === cls);
-    const revenue = rows.reduce((a, i) => a + i.revenuePeriod, 0);
-    return {
-      class: cls,
-      count: rows.length,
-      value: round(rows.reduce((a, i) => a + i.value, 0), 2),
-      revenue: round(revenue, 2),
-      revenueShare: revenueTotal > 0 ? round((revenue / revenueTotal) * 100, 1) : 0,
-    };
-  });
-
-  const xyz = hasMonthly
-    ? (["X", "Y", "Z"] as XyzClass[]).map((cls) => ({
-        class: cls,
-        count: analyzed.filter((i) => i.xyz === cls).length,
-      }))
-    : null;
-
-  const matrix = hasMonthly
-    ? abcClasses.map((cls) => {
-        const rows = analyzed.filter((i) => i.abc === cls);
-        return {
-          abc: cls,
-          x: rows.filter((i) => i.xyz === "X").length,
-          y: rows.filter((i) => i.xyz === "Y").length,
-          z: rows.filter((i) => i.xyz === "Z").length,
-        };
-      })
-    : null;
+  const { abc, xyz, xyzUnclassified, xyzCoverage, matrix } = summarizeClassification(analyzed);
 
   const byValueDesc = (a: AnalyzedItem, b: AnalyzedItem) => b.value - a.value;
   const topCapital = [...analyzed].sort(byValueDesc).slice(0, 20);
@@ -500,6 +529,7 @@ export function analyze(
 
   return {
     generatedAt: new Date().toISOString(),
+    classificationVersion: CLASSIFICATION_VERSION,
     settings,
     currency: "SEK",
     kpis: {
@@ -513,10 +543,16 @@ export function analyze(
       slowMoverValue: round(slowMoverValue, 2),
       slowMoverCount: slowMoverItems.length,
       annualCogs: round(annualCogs, 2),
+      salesValue: round(salesValue, 2),
+      cogsPeriod: round(periodCogs, 2),
+      grossProfit: round(grossProfit, 2),
+      grossMarginPct: salesValue > 0 ? round((grossProfit / salesValue) * 100, 1) : 0,
       turns: round(turns, 2),
       daysOfInventory: daysOfInventory === null ? null : round(daysOfInventory, 0),
       potentialReleaseLow: round(potentialReleaseLow, 2),
       potentialReleaseHigh: round(potentialReleaseHigh, 2),
+      releaseRateLow: round(releaseRateLow, 1),
+      releaseRateHigh: round(releaseRateHigh, 1),
       capitalCostAnnual: round(inventoryValue * settings.capitalCostRate, 2),
       stockoutRiskCount: stockoutItems.length,
       stockoutRiskValue: round(
@@ -532,6 +568,8 @@ export function analyze(
     aging: agingBuckets,
     abc,
     xyz,
+    xyzUnclassified,
+    xyzCoverage,
     matrix,
     items: analyzed,
     topCapital,

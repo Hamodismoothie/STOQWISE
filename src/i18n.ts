@@ -3,7 +3,7 @@
  *
  * One catalog per language, a locale resolver backed by a cookie, and helpers
  * for direction and regional formatting. Language never changes currency: prices
- * are always quoted in SEK and the amount is identical in every locale — only
+ * are always quoted in SEK and the amount is identical in every locale - only
  * separators are localised.
  *
  * Languages are registered here with their native name and text direction. A
@@ -24,6 +24,14 @@ export const LOCALES = [
   { code: "nl", nativeName: "Nederlands", dir: "ltr", intl: "nl-NL", available: false, ogLocale: "nl_NL" },
   { code: "it", nativeName: "Italiano", dir: "ltr", intl: "it-IT", available: false, ogLocale: "it_IT" },
   { code: "pt", nativeName: "Português", dir: "ltr", intl: "pt-PT", available: false, ogLocale: "pt_PT" },
+  {
+    code: "en-XA",
+    nativeName: "Pseudo (English)",
+    dir: "ltr",
+    intl: "en-US",
+    available: false,
+    ogLocale: "en_US",
+  },
 ] as const;
 
 export type Locale = (typeof LOCALES)[number]["code"];
@@ -48,27 +56,68 @@ export function intlFor(locale: Locale): string {
   return localeInfo(locale)?.intl ?? "en-US";
 }
 
-/** Reads the persisted choice from a Cookie header. Unknown or unavailable codes fall back to English. */
-export function localeFromCookie(header: string | null | undefined): AvailableLocale {
-  if (!header) return DEFAULT_LOCALE;
+/** Locale for generated content and data lookups. Pseudo and not-yet-shipped
+ * languages read English data; only Swedish reads Swedish. */
+export function contentLocale(locale: Locale): "sv" | "en" {
+  return locale === "sv" ? "sv" : "en";
+}
+
+/** The language explicitly chosen in this request, or null when the cookie is
+ * absent or carries a language the product does not ship yet. */
+export function explicitLocaleFromCookie(header: string | null | undefined): AvailableLocale | null {
+  if (!header) return null;
   for (const part of header.split(";")) {
     const [name, ...rest] = part.trim().split("=");
     if (name !== COOKIE_NAME) continue;
     const value = decodeURIComponent(rest.join("=")).trim();
     if (isAvailableLocale(value)) return value;
   }
-  return DEFAULT_LOCALE;
+  return null;
+}
+
+/** Reads the persisted choice from a Cookie header. Unknown or unavailable codes fall back to English. */
+export function localeFromCookie(header: string | null | undefined): AvailableLocale {
+  return explicitLocaleFromCookie(header) ?? DEFAULT_LOCALE;
 }
 
 export function cookieFor(locale: AvailableLocale): string {
   return `${COOKIE_NAME}=${locale}; Path=/; Max-Age=31536000; SameSite=Lax`;
 }
 
+/**
+ * One language decision for the whole request. An explicit cookie wins because
+ * it is the language the person just chose. The stored user preference is next,
+ * then the organisation default, and only then the caller's fallback.
+ */
+export function resolveLocale(input: {
+  cookie?: string | null;
+  userLocale?: string | null;
+  orgLocale?: string | null;
+  fallback?: AvailableLocale;
+} = {}): Locale {
+  const cookie = explicitLocaleFromCookie(input.cookie);
+  if (cookie) return cookie;
+  if (isAvailableLocale(input.userLocale)) return input.userLocale;
+  if (isAvailableLocale(input.orgLocale)) return input.orgLocale;
+  return input.fallback ?? DEFAULT_LOCALE;
+}
+
 /** Only same-site, absolute paths are accepted as a return target. */
 export function safeNext(next: string | null | undefined): string {
   if (!next) return "/";
-  if (!next.startsWith("/") || next.startsWith("//")) return "/";
-  if (/[\\\u0000-\u001f]/.test(next)) return "/";
+  if (next.length > 2000) return "/";
+  let decoded = next;
+  try {
+    decoded = decodeURIComponent(next);
+  } catch {
+    return "/";
+  }
+  // Reject protocol-relative URLs, backslash tricks and control characters in
+  // both the raw and the decoded form. `/%5c%5cevil.example` must not become an
+  // off-site redirect after the browser normalises it.
+  if (!decoded.startsWith("/") || decoded.startsWith("//")) return "/";
+  if (/[\\\u0000-\u001f]/.test(decoded)) return "/";
+  if (/^\/[a-z][a-z0-9+.-]*:/i.test(decoded)) return "/";
   return next;
 }
 
@@ -82,7 +131,7 @@ export function formatNumber(locale: Locale, value: number, decimals = 0): strin
 }
 
 /**
- * Amounts are always SEK. The language changes separators and grouping only —
+ * Amounts are always SEK. The language changes separators and grouping only -
  * never the currency, the amount or the number of decimals (whole kronor).
  */
 export function formatSek(locale: Locale, value: number): string {
@@ -104,7 +153,7 @@ const en = {
     product: "Product",
     capabilities: "Capabilities",
     pricing: "Pricing",
-    about: "Company",
+    about: "About",
     menu: "Menu",
     signIn: "Sign in",
     getStarted: "Get started",
@@ -123,6 +172,7 @@ const en = {
     contactUs: "Contact us",
     tagline: "Nordic inventory analysis for commerce and industry.",
     rights: "All rights reserved.",
+    linkedinCompany: "Visit the STOQWISE LinkedIn company page",
   },
   home: {
     title1: "Better inventory.",
@@ -281,30 +331,153 @@ const en = {
     errorRegisterRate: "Too many registrations from the same address.",
     errorFields: "Fill in all fields. The password must be at least 10 characters.",
     errorEmailTaken: "An account with that email already exists. Sign in instead.",
+    errorEmail: "Enter a valid email address.",
+    forgotLink: "Forgot your password?",
+    forgotTitle: "Reset your password",
+    forgotStatement: "One link, sixty minutes.",
+    forgotNote: "The link can be used once. If nothing arrives, check the spam folder.",
+    forgotButton: "Send reset link",
+    forgotSent: "If the address is registered with us, we have sent a link. It is valid for 60 minutes.",
+    resetTitle: "Choose a new password",
+    resetLede: "Reset for {email}",
+    resetStatement: "New password, new sessions.",
+    resetNote: "When the password changes, every other session is signed out.",
+    newPassword: "New password",
+    confirmPassword: "Repeat password",
+    resetButton: "Save password",
+    resetMismatch: "The passwords do not match.",
+    resetInvalid: "The link is invalid or has expired. Request a new one.",
+    requestNew: "Request a new link",
+    resetDone: "Your password is updated. Sign in with the new one.",
+    accountDeleted: "Your account and its personal data have been deleted.",
+    backToLogin: "Back to sign in",
+  },
+  invite: {
+    title: "Join the team",
+    lede: "Invitation",
+    statement: "You are invited to {org}.",
+    note: "The {role} role grants access to the organisation's analyses. The role is checked on the server on every request.",
+    email: "Email",
+    name: "Name",
+    password: "Choose a password",
+    submit: "Join",
+    busy: "Joining…",
+    question: "Questions?",
+    contact: "Contact us",
+    errorOwner: "The owner role cannot be accepted through an invitation.",
+    errorFields: "Name and a password of at least 10 characters are required.",
+    errorPassword: "The password does not match the existing account.",
+    errorUsed: "This invitation has already been used.",
   },
   about: {
-    pageTitle: "About · STOQWISE",
-    description: "STOQWISE is an early-stage technology company building inventory intelligence software, founded by Mohammad Al Kakouni.",
+    pageTitle: "About STOQWISE · Inventory intelligence for better decisions",
+    description: "STOQWISE brings inventory analysis, forecasting and purchasing into one platform, helping companies understand stock, capital and the next action.",
     eyebrow: "About STOQWISE",
-    h1: "Built around how inventory work actually happens.",
-    lead: "STOQWISE is an early-stage technology company building software for inventory and supply-chain decisions.",
-    founder: "Founder",
-    educationLabel: "Education",
-    education: "Logistics Service Management, Lund University",
-    basedLabel: "Based in",
-    based: "Sweden",
-    whyTitle: "Why STOQWISE exists",
-    whyP1: "The company comes out of hands-on work with retail operations, inventory, logistics and business systems. Close to item data and operational processes, one problem kept repeating: businesses generate large amounts of data but lack the tools to turn it into purchasing decisions.",
-    whyP2: "The result is visible in overstock, inactive items and capital tied up in goods that do not move. STOQWISE was founded to connect operational data with the purchasing and inventory decisions made from it.",
-    experienceTitle: "Operational experience and formal training",
-    experienceP1: "Practical experience from retail operations, inventory management, logistics and business systems, combined with studies in Logistics Service Management at Lund University.",
-    experienceP2: "The combination matters in practice: the models are built on how stock, purchasing and lead times actually behave in a store or a warehouse.",
-    visionTitle: "Inventory intelligence for every business.",
-    visionP1: "The long-term ambition is to make inventory analysis practical for companies of every size, so purchasing is based on demand and lead time rather than habit.",
-    signature: "STOQWISE. Better inventory. Smarter decisions.",
-    ctaTitle: "See the platform.",
-    ctaText: "The demo runs the full engine on a synthetic retail dataset.",
-    ctaButton: "See the platform",
+    h1: "We turn inventory data into better decisions.",
+    lead: "STOQWISE brings analysis, forecasting and purchasing into one platform. We help companies see how much capital inventory ties up, what may run out and which decisions improve the flow.",
+    heroProof: [
+      "The same data in analysis and visualisation",
+      "Traceable from KPI to item",
+      "Built on established logistics methods",
+    ],
+    heroPrimary: "Explore the platform",
+    heroSecondary: "Book a walkthrough",
+    heroPanelLabel: "Inventory overview",
+    heroPanelDemo: "Synthetic demo",
+    heroInventory: "Inventory value",
+    heroTurns: "Inventory turns",
+    heroRisk: "Stockout risk",
+    heroTurnsUnit: "turns/yr",
+    heroPanelFoot: "A closest to the dock · C farthest away",
+    introEyebrow: "What STOQWISE is",
+    introTitle: "Inventory is more than stock balances.",
+    introSignalsLabel: "Four perspectives, one system",
+    introSignals: ["Capital", "Demand", "Availability", "Suppliers"],
+    introBody: [
+      "Inventory is affected by capital, demand, lead times and suppliers. STOQWISE makes those connections visible, so purchasing and stockholding can balance availability and profitability.",
+    ],
+    originEyebrow: "Why we founded STOQWISE",
+    originTitle: "The information was there. The overview was missing.",
+    originQuestionsLabel: "The questions that drove us",
+    originLead: "The underlying data usually existed, but never gathered in one place.",
+    originQuestions: [
+      "Which items tie up the most capital?",
+      "Which products risk running out?",
+      "How does new demand change purchasing needs?",
+      "Where are the biggest opportunities?",
+    ],
+    originBody: [
+      "STOQWISE was founded to replace scattered reports with one shared view of capital, risk and the next action.",
+    ],
+    systemEyebrow: "Logistics, technology and economics",
+    systemTitle: "Good inventory decisions are connected.",
+    systemLead: "Demand, forecasts, inventory needs, purchasing and capital form one chain, not separate metrics.",
+    systemBody: [
+      "When demand changes, the forecast, inventory need and purchase move with it, and the capital impact becomes visible.",
+    ],
+    systemFlowTitle: "One chain, not isolated metrics",
+    systemSteps: [
+      { title: "Demand", text: "History and planned demand." },
+      { title: "Forecast", text: "Forward-looking requirement." },
+      { title: "Inventory need", text: "Lead time, service level and safety stock." },
+      { title: "Purchasing", text: "Reorder point and order quantity." },
+      { title: "Capital", text: "Tied-up capital and turnover." },
+    ],
+    capabilitiesEyebrow: "The platform",
+    capabilitiesTitle: "Six capabilities that work as one system.",
+    capabilitiesLead: "From analysis to simulation.",
+    capabilities: [
+      { title: "Inventory intelligence", text: "Inventory value, tied-up capital, ABC/XYZ, overstock and stockout risk in one analysis." },
+      { title: "Demand forecasting", text: "Historical demand becomes a forward-looking requirement with uncertainty." },
+      { title: "Purchasing optimisation", text: "Reorder points, safety stock and purchase proposals with lead time and MOQ." },
+      { title: "Supplier analysis", text: "Suppliers, terms and how delivery time affects inventory needs." },
+      { title: "Digital inventory world", text: "Explore the warehouse in 3D and connect each zone to the analysis." },
+      { title: "Scenarios and simulation", text: "Test how demand, lead times and stock levels affect capital and service." },
+    ],
+    twinEyebrow: "The digital twin",
+    twinTitle: "From numbers to a digital inventory world.",
+    twinLead: "The same data as the analysis, with the warehouse's physical structure.",
+    twinBody: [
+      "Explore warehouse structure, items and stock status in an interactive 3D environment. Connect the physical structure to stock balance, capital tied up and analysis.",
+    ],
+    twinPoints: [
+      { title: "Physical structure", text: "Aisles, zones and racks show how the warehouse is organised." },
+      { title: "Zones and racks", text: "Every zone and rack shows stock, value and status for its items." },
+      { title: "Clear provenance", text: "Placements are calculated from item data and labelled as simulated. They are never presented as verified warehouse coordinates." },
+    ],
+    twinSceneLabel: "Warehouse map",
+    twinLink: "Explore the inventory world",
+    twinSceneDemo: "Synthetic demo",
+    twinSceneAlt: "Stylised digital warehouse with {racks} racks across {aisles} categories. Amber marks overstock, red marks stockout risk and grey marks inactive stock.",
+    twinSceneFoot: "A closest to the dock · C farthest away",
+    twinCta: "Open the inventory world",
+    twinSecondary: "See the platform",
+    experienceEyebrow: "Experience and foundations",
+    experienceTitle: "Grounded in practice.",
+    experienceLead: "Warehouse work and business systems taught us where decisions are actually made. The method should make them clearer, not more complicated.",
+    experienceBody: [
+      "Every analysis starts from real workflows and consistent calculations.",
+    ],
+    founderEyebrow: "Founder",
+    founderTitle: "Built close to the warehouse.",
+    founderName: "Mohammad Al Kakouni",
+    founderEducationLabel: "Education",
+    founderEducation: "Logistics Service Management, Lund University",
+    founderExperienceLabel: "Experience",
+    founderExperience: "Hands-on work in retail, inventory management, logistics and business systems",
+    founderBasedLabel: "Based in",
+    founderBased: "Sweden",
+    linkedinLabel: "Visit Mohammad Al Kakouni's LinkedIn profile",
+    companyLinkedin: "STOQWISE on LinkedIn",
+    companyLinkedinLabel: "Visit the STOQWISE LinkedIn company page",
+    visionEyebrow: "Our vision",
+    visionTitle: "Inventory data should describe more than what has already happened.",
+    visionBody: [
+      "We want to give companies a clearer view of what is happening in their inventory, and what may happen next. Data, methodology and visualisation should lead to decisions that are both profitable and sustainable.",
+    ],
+    visionStatement: "STOQWISE. Understand your inventory. Make better decisions.",
+    visionPrimary: "Explore the platform",
+    visionSecondary: "Talk to us about your inventory",
   },
   contact: {
     pageTitle: "Contact · STOQWISE",
@@ -505,6 +678,7 @@ const sv: MessageCatalog = {
     contactUs: "Kontakta oss",
     tagline: "Nordisk lageranalys för handel och industri.",
     rights: "Alla rättigheter förbehållna.",
+    linkedinCompany: "Besök STOQWISE företagssida på LinkedIn",
   },
   home: {
     title1: "Bättre lager.",
@@ -663,30 +837,153 @@ const sv: MessageCatalog = {
     errorRegisterRate: "För många registreringar från samma adress.",
     errorFields: "Fyll i alla fält. Lösenordet måste vara minst 10 tecken.",
     errorEmailTaken: "Det finns redan ett konto med den e-postadressen. Logga in i stället.",
+    errorEmail: "Ange en giltig e-postadress.",
+    forgotLink: "Glömt lösenordet?",
+    forgotTitle: "Återställ lösenordet",
+    forgotStatement: "En länk, sextio minuter.",
+    forgotNote: "Länken kan användas en gång. Kommer inget mejl, kontrollera skräpposten.",
+    forgotButton: "Skicka återställningslänk",
+    forgotSent: "Om adressen finns hos oss har vi skickat en länk. Den gäller i 60 minuter.",
+    resetTitle: "Välj ett nytt lösenord",
+    resetLede: "Återställning för {email}",
+    resetStatement: "Nytt lösenord, nya sessioner.",
+    resetNote: "När lösenordet byts loggas alla andra sessioner ut.",
+    newPassword: "Nytt lösenord",
+    confirmPassword: "Repetera lösenordet",
+    resetButton: "Spara lösenordet",
+    resetMismatch: "Lösenorden stämmer inte överens.",
+    resetInvalid: "Länken är ogiltig eller har gått ut. Begär en ny.",
+    requestNew: "Begär en ny länk",
+    resetDone: "Lösenordet är uppdaterat. Logga in med det nya.",
+    accountDeleted: "Ditt konto och dess personuppgifter är raderade.",
+    backToLogin: "Till inloggningen",
+  },
+  invite: {
+    title: "Gå med i teamet",
+    lede: "Inbjudan",
+    statement: "Du är inbjuden till {org}.",
+    note: "Rollen {role} ger åtkomst till organisationens analyser. Rollen kontrolleras på servern vid varje begäran.",
+    email: "E-post",
+    name: "Namn",
+    password: "Välj ett lösenord",
+    submit: "Gå med",
+    busy: "Går med…",
+    question: "Frågor?",
+    contact: "Kontakta oss",
+    errorOwner: "Ägarrollen kan inte accepteras via inbjudan.",
+    errorFields: "Namn och ett lösenord på minst 10 tecken krävs.",
+    errorPassword: "Lösenordet stämmer inte för det befintliga kontot.",
+    errorUsed: "Inbjudan har redan använts.",
   },
   about: {
-    pageTitle: "Om oss · STOQWISE",
-    description: "STOQWISE är ett tidigt teknikbolag som bygger programvara för lagerintelligens, grundat av Mohammad Al Kakouni.",
+    pageTitle: "Om STOQWISE · Lagerintelligens för bättre beslut",
+    description: "STOQWISE samlar analys, prognoser och inköp i en plattform som hjälper företag att förstå lager, kapital och nästa åtgärd.",
     eyebrow: "Om STOQWISE",
-    h1: "Byggt kring lagerarbetets verklighet.",
-    lead: "STOQWISE är ett tidigt teknikbolag som bygger programvara för beslut om lager och försörjningskedja.",
-    founder: "Grundare",
-    educationLabel: "Utbildning",
-    education: "Logistics Service Management, Lunds universitet",
-    basedLabel: "Baserad i",
-    based: "Sverige",
-    whyTitle: "Varför STOQWISE finns",
-    whyP1: "Bolaget kommer ur praktiskt arbete med detaljhandel, lager, logistik och affärssystem. Nära artikeldata och operativa processer återkom ett problem: företag genererar stora mängder data men saknar verktyg för att göra inköpsbeslut av den.",
-    whyP2: "Resultatet syns i överlager, inaktiva artiklar och kapital bundet i varor som inte rör sig. STOQWISE grundades för att knyta ihop operativ data med de inköps- och lagerbeslut som fattas utifrån den.",
-    experienceTitle: "Erfarenhet från lager och logistik",
-    experienceP1: "Praktisk erfarenhet från detaljhandel, lagerhantering, logistik och affärssystem, kombinerat med studier i Logistics Service Management vid Lunds universitet.",
-    experienceP2: "Kombinationen spelar roll i praktiken: modellerna bygger på hur lager, inköp och ledtider faktiskt beter sig i en butik eller ett lager.",
-    visionTitle: "Lagerintelligens för varje företag.",
-    visionP1: "Den långsiktiga ambitionen är att göra lageranalys praktisk för företag i alla storlekar, så att inköp bygger på efterfrågan och ledtid i stället för vana.",
-    signature: "STOQWISE. Bättre lager. Smartare beslut.",
-    ctaTitle: "Se plattformen.",
-    ctaText: "Demon kör hela motorn på en syntetisk datamängd från handeln.",
-    ctaButton: "Se plattformen",
+    h1: "Vi gör lagerdata till bättre beslut.",
+    lead: "STOQWISE samlar analys, prognoser och inköp i en plattform. Vi hjälper företag att se hur mycket kapital lagret binder, vad som riskerar att ta slut och vilka beslut som skapar bättre flöden.",
+    heroProof: [
+      "Samma data i analys och visualisering",
+      "Spårbart från KPI till artikel",
+      "Byggt på etablerad logistikmetodik",
+    ],
+    heroPrimary: "Utforska plattformen",
+    heroSecondary: "Boka en genomgång",
+    heroPanelLabel: "Lageröversikt",
+    heroPanelDemo: "Syntetisk demo",
+    heroInventory: "Lagervärde",
+    heroTurns: "Lageromsättning",
+    heroRisk: "Bristrisk",
+    heroTurnsUnit: "ggr/år",
+    heroPanelFoot: "A närmast docken · C längst bort",
+    introEyebrow: "Vad STOQWISE är",
+    introTitle: "Ett lager är mer än lagersaldon.",
+    introSignalsLabel: "Fyra perspektiv, ett system",
+    introSignals: ["Kapital", "Efterfrågan", "Tillgänglighet", "Leverantörer"],
+    introBody: [
+      "Ett lager påverkas av kapital, efterfrågan, ledtider och leverantörer. STOQWISE gör sambanden synliga så att inköp och lagerhållning kan balansera tillgänglighet och lönsamhet.",
+    ],
+    originEyebrow: "Varför vi grundade STOQWISE",
+    originTitle: "Informationen fanns. Helhetsbilden saknades.",
+    originQuestionsLabel: "Frågorna som drev oss",
+    originLead: "Underlagen fanns ofta redan, men aldrig samlade på ett ställe.",
+    originQuestions: [
+      "Vilka artiklar binder mest kapital?",
+      "Vilka produkter riskerar att ta slut?",
+      "Hur påverkar ny efterfrågan inköpsbehovet?",
+      "Var finns de största förbättringarna?",
+    ],
+    originBody: [
+      "STOQWISE grundades för att ersätta spridda rapporter med en gemensam bild av kapital, risk och nästa åtgärd.",
+    ],
+    systemEyebrow: "Logistik, teknik och ekonomi",
+    systemTitle: "Bra lagerbeslut hänger ihop.",
+    systemLead: "Efterfrågan, prognoser, lagerbehov, inköp och kapital är en kedja, inte separata nyckeltal.",
+    systemBody: [
+      "När efterfrågan förändras följer prognosen, lagerbehovet och inköpet med, och kapitalbindningen blir synlig.",
+    ],
+    systemFlowTitle: "En kedja, inte isolerade nyckeltal",
+    systemSteps: [
+      { title: "Efterfrågan", text: "Historik och planerad efterfrågan." },
+      { title: "Prognos", text: "Framåtblickande behov." },
+      { title: "Lagerbehov", text: "Ledtid, service och säkerhetslager." },
+      { title: "Inköp", text: "Beställningspunkt och orderkvantitet." },
+      { title: "Kapital", text: "Kapitalbindning och omsättning." },
+    ],
+    capabilitiesEyebrow: "Plattformen",
+    capabilitiesTitle: "Sex funktioner som arbetar som ett system.",
+    capabilitiesLead: "Från analys till simulering.",
+    capabilities: [
+      { title: "Lagerintelligens", text: "Lagervärde, kapitalbindning, ABC/XYZ, överlager och bristrisk i samma analys." },
+      { title: "Efterfrågeprognoser", text: "Historisk efterfrågan omvandlas till framtida behov med osäkerhet." },
+      { title: "Inköpsoptimering", text: "Beställningspunkter, säkerhetslager och inköpsförslag med hänsyn till ledtid och MOQ." },
+      { title: "Leverantörsanalys", text: "Leverantörer, villkor och leveranstidens effekt på lagerbehovet." },
+      { title: "Digital lagervärld", text: "Utforska lagret i 3D och koppla varje zon till analysens data." },
+      { title: "Scenarier och simulering", text: "Testa hur efterfrågan, ledtider och lagernivåer påverkar kapital och service." },
+    ],
+    twinEyebrow: "Digital tvilling",
+    twinTitle: "Från siffror till en digital lagervärld.",
+    twinLead: "Samma data som analysen, med lagrets fysiska struktur.",
+    twinBody: [
+      "Utforska lagerstruktur, artiklar och lagerstatus i en interaktiv 3D-miljö. Koppla den fysiska strukturen till lagersaldo, kapitalbindning och analys.",
+    ],
+    twinPoints: [
+      { title: "Fysisk struktur", text: "Gångar, zoner och pallställ visar hur lagret är uppbyggt." },
+      { title: "Zoner och pallställ", text: "Varje zon och pallställ visar saldo, värde och status för sina artiklar." },
+      { title: "Tydligt ursprung", text: "Placeringarna är beräknade ur artikeldata och märkta som simulerade. De visas aldrig som verifierade lagerkoordinater." },
+    ],
+    twinSceneLabel: "Lagerkarta",
+    twinLink: "Utforska lagervärlden",
+    twinSceneDemo: "Syntetisk demo",
+    twinSceneAlt: "Stiliserad digital lagermiljö med {racks} ställ i {aisles} kategorier. Gult markerar överlager, rött markerar bristrisk och grått markerar inaktivt lager.",
+    twinSceneFoot: "A närmast docken · C längst bort",
+    twinCta: "Öppna lagervärlden",
+    twinSecondary: "Se plattformen",
+    experienceEyebrow: "Erfarenhet och grund",
+    experienceTitle: "Grundat i praktiken.",
+    experienceLead: "Lagerarbete och affärssystem har lärt oss var besluten faktiskt fattas. Metodiken ska göra dem begripliga, inte mer komplicerade.",
+    experienceBody: [
+      "Därför utgår varje analys från verkliga arbetsflöden och konsekventa beräkningar.",
+    ],
+    founderEyebrow: "Grundare",
+    founderTitle: "Byggt nära lagret.",
+    founderName: "Mohammad Al Kakouni",
+    founderEducationLabel: "Utbildning",
+    founderEducation: "Logistics Service Management, Lunds universitet",
+    founderExperienceLabel: "Erfarenhet",
+    founderExperience: "Praktiskt arbete inom detaljhandel, lagerhantering, logistik och affärssystem",
+    founderBasedLabel: "Baserad i",
+    founderBased: "Sverige",
+    linkedinLabel: "Besök Mohammad Al Kakounis LinkedIn-profil",
+    companyLinkedin: "STOQWISE på LinkedIn",
+    companyLinkedinLabel: "Besök STOQWISE företagssida på LinkedIn",
+    visionEyebrow: "Vår vision",
+    visionTitle: "Lagerdata ska beskriva mer än det som redan har hänt.",
+    visionBody: [
+      "Vi vill ge företag en tydligare bild av vad som händer i lagret, och vad som kan hända härnäst. Data, metodik och visualisering ska leda till beslut som är både lönsamma och hållbara.",
+    ],
+    visionStatement: "STOQWISE. Understand your inventory. Make better decisions.",
+    visionPrimary: "Utforska plattformen",
+    visionSecondary: "Prata med oss om ditt lager",
   },
   contact: {
     pageTitle: "Kontakt · STOQWISE",

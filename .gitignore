@@ -8,3 +8,13 @@ reports/*.pdf
 .DS_Store
 *.log
 .tools/
+.secrets/
+TOKEN_HAR.txt
+data/e2e/
+data/autopilot/
+data/agent/
+reports/e2e/
+public/world/.scale-bench
+public/world/.scale-bench.html
+test-results/
+playwright-report/

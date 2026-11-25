@@ -26,6 +26,8 @@ export type ForecastMethod =
   | "holt_winters"
   | "croston"
   | "sba"
+  | "tsb"
+  | "adida"
   | "zero";
 
 export type Frequency = "month" | "week" | "day";
@@ -34,6 +36,8 @@ export interface ForecastMetrics {
   mae: number;
   rmse: number;
   wape: number;
+  /** Mean absolute percentage error. Null when any actual period is zero. */
+  mape: number | null;
   bias: number;
 }
 
@@ -58,6 +62,12 @@ export interface ForecastResult {
   sigma: number;
   metrics: ForecastMetrics;
   candidates: MethodScore[];
+  /** Last holdout periods: actual outcomes vs the model's predictions. */
+  backtest: { actual: number[]; predicted: number[] } | null;
+  /** Number of non-finite values treated as zero. */
+  missingCount: number;
+  /** Extreme values capped for model fitting; the history itself is unchanged. */
+  outlierCount: number;
   intermittent: boolean;
   zeroRatio: number;
   confidence: "high" | "medium" | "low";
@@ -70,6 +80,8 @@ export interface SupplyPlan {
   forecastMonthly: number;
   forecastTotal: number;
   leadTimeDays: number;
+  leadTimeSigmaDays: number;
+  leadTimeVariabilityIncluded: boolean;
   demandDuringLeadTime: number;
   sigmaDuringLeadTime: number;
   safetyStock: number;
@@ -85,8 +97,8 @@ export interface SupplyPlan {
 
 const DAYS_PER_MONTH = 30.44;
 const DAYS_PER_WEEK = 7;
-const ORDER_COST_SEK = 350;
-const HOLDING_RATE = 0.22;
+export const ORDER_COST_SEK = 350;
+export const HOLDING_RATE = 0.22;
 
 /* ------------------------------------------------------------------ math */
 
@@ -133,6 +145,8 @@ const round = (n: number, d = 2): number => {
 
 interface Fitted {
   forecast: (step: number) => number;
+  /** One-step-ahead predictions for values[1..n-1], made before each outcome. */
+  oneStep: number[];
   method: ForecastMethod;
 }
 
@@ -151,8 +165,12 @@ function fitSes(values: number[]): Fitted {
     if (sse < best.sse) best = { alpha, sse };
   }
   let level = values[0] ?? 0;
-  for (let i = 1; i < values.length; i++) level = best.alpha * values[i]! + (1 - best.alpha) * level;
-  return { forecast: () => level, method: "ses" };
+  const oneStep: number[] = [];
+  for (let i = 1; i < values.length; i++) {
+    oneStep.push(level);
+    level = best.alpha * values[i]! + (1 - best.alpha) * level;
+  }
+  return { forecast: () => level, oneStep, method: "ses" };
 }
 
 /** Holt linear trend. */
@@ -177,13 +195,15 @@ function fitHolt(values: number[]): Fitted {
   }
   let level = values[0] ?? 0;
   let trend = values.length > 1 ? values[1]! - values[0]! : 0;
+  const oneStep: number[] = [];
   for (let i = 1; i < values.length; i++) {
     const prev = level + trend;
+    oneStep.push(prev);
     const newLevel = best.alpha * values[i]! + (1 - best.alpha) * prev;
     trend = best.beta * (newLevel - level) + (1 - best.beta) * trend;
     level = newLevel;
   }
-  return { forecast: (step) => Math.max(0, level + trend * step), method: "holt" };
+  return { forecast: (step) => Math.max(0, level + trend * step), oneStep, method: "holt" };
 }
 
 /** Holt-Winters additive seasonality. Needs two full seasons to be meaningful. */
@@ -224,8 +244,10 @@ function fitHoltWinters(values: number[]): Fitted {
   const seas = [...seasonal];
   let level = values[0]! - seas[0]!;
   let trend = (values[1]! - values[0]!) || 0;
+  const oneStep: number[] = [];
   for (let i = 1; i < n; i++) {
     const s = seas[i % m]!;
+    oneStep.push(level + trend + s);
     const newLevel = best.alpha * (values[i]! - s) + (1 - best.alpha) * (level + trend);
     trend = best.beta * (newLevel - level) + (1 - best.beta) * trend;
     seas[i % m] = best.gamma * (values[i]! - newLevel) + (1 - best.gamma) * s;
@@ -237,6 +259,7 @@ function fitHoltWinters(values: number[]): Fitted {
       const s = seas[(last + step) % m] ?? 0;
       return Math.max(0, level + trend * step + s);
     },
+    oneStep,
     method: "holt_winters",
   };
 }
@@ -248,58 +271,155 @@ function fitHoltWinters(values: number[]): Fitted {
  */
 function fitCroston(values: number[], sba: boolean): Fitted {
   const alpha = 0.15;
+  const factor = sba ? 0.95 : 1;
   let size = 0;
   let interval = 1;
   let seen = false;
   let gap = 0;
-  let sizeInit = 0;
-  let count = 0;
-  for (const v of values) {
-    if (v > 0) {
-      sizeInit += v;
-      count++;
-    }
-  }
-  if (count > 0) {
-    size = sizeInit / count;
-    interval = values.length / count;
-    seen = true;
-  }
-  for (const v of values) {
+  const oneStep: number[] = [];
+  for (const [index, v] of values.entries()) {
+    if (index > 0) oneStep.push(seen && interval > 0 ? Math.max(0, (factor * size) / interval) : 0);
     gap++;
     if (v > 0) {
-      if (seen) {
+      if (!seen) {
+        // Start with the first observed demand size and inter-demand interval.
+        // Initialising from the whole series would leak future observations into
+        // the first forecast and understate the forecast error used for safety stock.
+        size = v;
+        interval = Math.max(1, gap);
+        seen = true;
+      } else {
         size = alpha * v + (1 - alpha) * size;
         interval = alpha * gap + (1 - alpha) * interval;
       }
       gap = 0;
     }
   }
-  const factor = sba ? 0.95 : 1;
   const rate = interval > 0 ? (factor * size) / interval : 0;
-  return { forecast: () => Math.max(0, rate), method: sba ? "sba" : "croston" };
+  return { forecast: () => Math.max(0, rate), oneStep, method: sba ? "sba" : "croston" };
+}
+
+/**
+ * TSB (Teunter-Syntetos-Babai) models the probability of demand separately from
+ * the size of a demand. Unlike Croston, the probability is updated in every
+ * period, including zero-demand periods, so the model reacts when an item stops
+ * selling. That matters for dead stock and for items whose demand is fading.
+ *
+ * p_t = alpha * d_t + (1 - alpha) * p_{t-1}, where d_t is 1 on a demand period
+ * z_t = beta * y_t + (1 - beta) * z_{t-1}, updated only on demand periods
+ * forecast = p_t * z_t
+ */
+function fitTsb(values: number[]): Fitted {
+  // A small, stable parameter grid. A larger grid on 12–24 monthly points
+  // mostly fits noise, and TSB is evaluated at several rolling origins.
+  const grid = [0.1, 0.2, 0.3];
+  let best = { alpha: 0.15, beta: 0.15, sse: Infinity };
+
+  for (const alpha of grid) {
+    for (const beta of grid) {
+      let probability = values[0]! > 0 ? 1 : 0;
+      let size = values[0]!;
+      let seen = values[0]! > 0;
+      let sse = 0;
+      for (let i = 1; i < values.length; i++) {
+        const predicted = probability * size;
+        sse += (values[i]! - predicted) ** 2;
+        if (values[i]! > 0) {
+          // The first demand starts the size level at the observed value. The
+          // same rule as Croston; smoothing from an artificial zero would make
+          // the first forecast far too low.
+          size = seen ? beta * values[i]! + (1 - beta) * size : values[i]!;
+          seen = true;
+          probability = alpha + (1 - alpha) * probability;
+        } else {
+          probability = (1 - alpha) * probability;
+        }
+      }
+      if (sse < best.sse) best = { alpha, beta, sse };
+    }
+  }
+
+  let probability = values[0]! > 0 ? 1 : 0;
+  let size = values[0]!;
+  let seen = values[0]! > 0;
+  const oneStep: number[] = [];
+  for (let i = 1; i < values.length; i++) {
+    oneStep.push(probability * size);
+    if (values[i]! > 0) {
+      size = seen ? best.beta * values[i]! + (1 - best.beta) * size : values[i]!;
+      seen = true;
+      probability = best.alpha + (1 - best.alpha) * probability;
+    } else {
+      probability = (1 - best.alpha) * probability;
+    }
+  }
+  return { forecast: () => Math.max(0, probability * size), oneStep, method: "tsb" };
+}
+
+/**
+ * ADIDA (Aggregate-Disaggregate Intermittent Demand Approach) sums the series
+ * into non-overlapping buckets whose average length is the average demand
+ * interval, forecasts the buckets with SES and divides the result back to the
+ * original period. Aggregation turns a sparse series into a denser one without
+ * changing total demand.
+ */
+function fitAdida(values: number[]): Fitted {
+  const n = values.length;
+  const demandPeriods = values.filter((value) => value > 0).length;
+  const bucketSize = Math.max(2, Math.min(12, Math.round(n / Math.max(1, demandPeriods))));
+  const buckets: number[] = [];
+  const bucketLengths: number[] = [];
+  for (let start = 0; start < n; start += bucketSize) {
+    const slice = values.slice(start, start + bucketSize);
+    buckets.push(slice.reduce((sum, value) => sum + value, 0));
+    bucketLengths.push(slice.length);
+  }
+  if (buckets.length < 2) return fitCroston(values, false);
+
+  const aggregate = fitSes(buckets);
+  const oneStep: number[] = [];
+  for (let i = 1; i < n; i++) {
+    const bucket = Math.floor(i / bucketSize);
+    const previous = bucket > 0 ? aggregate.oneStep[bucket - 1] : undefined;
+    oneStep.push(previous === undefined ? 0 : previous / bucketLengths[bucket]!);
+  }
+  return {
+    // Future buckets are complete by definition; divide by the chosen bucket
+    // size, not by a short final bucket in the history.
+    forecast: () => Math.max(0, aggregate.forecast(1) / bucketSize),
+    oneStep,
+    method: "adida",
+  };
 }
 
 function fitNaive(values: number[]): Fitted {
   const last = values[values.length - 1] ?? 0;
-  return { forecast: () => last, method: "naive" };
+  return { forecast: () => last, oneStep: values.slice(0, -1), method: "naive" };
 }
 
 function fitMean(values: number[]): Fitted {
   const m = mean(values);
-  return { forecast: () => m, method: "mean" };
+  const oneStep: number[] = [];
+  let sum = values[0] ?? 0;
+  for (let i = 1; i < values.length; i++) {
+    oneStep.push(sum / i);
+    sum += values[i]!;
+  }
+  return { forecast: () => m, oneStep, method: "mean" };
 }
 
 /* -------------------------------------------------------------- evaluation */
 
 function computeMetrics(actual: number[], predicted: number[]): ForecastMetrics {
   const n = Math.min(actual.length, predicted.length);
-  if (n === 0) return { mae: 0, rmse: 0, wape: 0, bias: 0 };
+  if (n === 0) return { mae: 0, rmse: 0, wape: 0, mape: null, bias: 0 };
   let abs = 0;
   let sq = 0;
   let sumAbs = 0;
   let sumActual = 0;
   let sumPred = 0;
+  let mapeSum = 0;
+  let mapeValid = true;
   for (let i = 0; i < n; i++) {
     const e = predicted[i]! - actual[i]!;
     abs += Math.abs(e);
@@ -307,6 +427,8 @@ function computeMetrics(actual: number[], predicted: number[]): ForecastMetrics 
     sumAbs += Math.abs(actual[i]!);
     sumActual += actual[i]!;
     sumPred += predicted[i]!;
+    if (actual[i]! === 0) mapeValid = false;
+    else mapeSum += Math.abs(e / actual[i]!);
   }
   return {
     mae: round(abs / n, 3),
@@ -314,6 +436,10 @@ function computeMetrics(actual: number[], predicted: number[]): ForecastMetrics 
     // WAPE is scale-free and does not explode on months with zero demand, which
     // MAPE does. That matters for intermittent retail demand.
     wape: round(sumAbs > 0 ? abs / sumAbs : 0, 4),
+    // MAPE is only meaningful when every actual period is non-zero. Returning
+    // null is honest; substituting 0 or dropping the zero months would overstate
+    // accuracy on exactly the series where it matters most.
+    mape: mapeValid ? round(mapeSum / n, 4) : null,
     bias: round(sumActual > 0 ? (sumPred - sumActual) / sumActual : 0, 4),
   };
 }
@@ -321,37 +447,98 @@ function computeMetrics(actual: number[], predicted: number[]): ForecastMetrics 
 interface Candidate {
   fitted: Fitted;
   score: ForecastMetrics;
+  /** Three-step holdout, used as a champion-challenger gate for model choice. */
+  gate: ForecastMetrics;
+  actual: number[];
+  predicted: number[];
 }
 
-function candidatesFor(values: number[], intermittent: boolean): Array<() => Fitted> {
+/**
+ * Caps only truly extreme observations for model fitting. The displayed history
+ * and the backtest actuals remain untouched, so a spike is still visible - it
+ * just cannot dominate the fitted level. Uses the IQR rule with a wide fence.
+ */
+function winsorize(values: number[]): { values: number[]; outliers: number } {
+  const positive = values.filter((v) => v > 0).sort((a, b) => a - b);
+  if (positive.length < 4) return { values: [...values], outliers: 0 };
+  const q = (p: number) => positive[Math.min(positive.length - 1, Math.floor((positive.length - 1) * p))]!;
+  const q1 = q(0.25);
+  const q3 = q(0.75);
+  const upper = Math.max(q3 + 3 * (q3 - q1), q3 * 2);
+  if (!Number.isFinite(upper) || upper <= 0) return { values: [...values], outliers: 0 };
+  let outliers = 0;
+  const capped = values.map((v) => {
+    if (v > upper) {
+      outliers++;
+      return upper;
+    }
+    return v;
+  });
+  return { values: capped, outliers };
+}
+
+type FittedFactory = (values: number[]) => Fitted;
+
+function candidatesFor(intermittent: boolean, seriesLength: number): FittedFactory[] {
   if (intermittent) {
-    return [() => fitCroston(values, true), () => fitCroston(values, false), () => fitNaive(values)];
+    // TSB reacts to fading demand, SBA corrects Croston's positive bias and
+    // ADIDA aggregates sparse periods. The backtest decides between them.
+    return [
+      (series) => fitTsb(series),
+      (series) => fitCroston(series, true),
+      (series) => fitCroston(series, false),
+      (series) => fitAdida(series),
+      (series) => fitNaive(series),
+    ];
   }
-  const list: Array<() => Fitted> = [() => fitSes(values), () => fitNaive(values), () => fitMean(values)];
-  if (values.length >= 8) list.push(() => fitHolt(values));
-  if (values.length >= 24) list.push(() => fitHoltWinters(values));
+  const list: FittedFactory[] = [
+    (series) => fitSes(series),
+    (series) => fitNaive(series),
+    (series) => fitMean(series),
+  ];
+  // The training window is shorter than the series. Only offer a model when
+  // the backtest can fit it on that shorter window without silently falling
+  // back to another method and reporting a misleading score.
+  if (seriesLength >= 11) list.push((series) => fitHolt(series));
+  if (seriesLength >= 27) list.push((series) => fitHoltWinters(series));
   return list;
 }
 
-function evaluate(values: number[], factories: Array<() => Fitted>): Candidate[] {
+function evaluate(values: number[], factories: FittedFactory[], actualValues: number[] = values): Candidate[] {
   const n = values.length;
   const holdout = Math.max(1, Math.min(3, Math.floor(n * 0.2)));
   const train = values.slice(0, n - holdout);
-  const test = values.slice(n - holdout);
+  const actual = actualValues.slice(n - holdout);
 
   if (train.length < 3) {
     // Too short to backtest: trust a simple smoother and say so through the
     // confidence field instead of pretending the number is measured.
     const fitted = fitMean(values);
-    const preds = values.slice(1).map(() => fitted.forecast(1));
-    return [{ fitted, score: computeMetrics(values.slice(1), preds) }];
+    const actualShort = actualValues.slice(1);
+    const preds = actualShort.map(() => fitted.forecast(1));
+    const score = computeMetrics(actualShort, preds);
+    return [{ fitted, score, gate: score, actual: actualShort, predicted: preds }];
   }
 
   const results: Candidate[] = [];
   for (const factory of factories) {
-    const fitted = factory();
-    const predicted = test.map((_, i) => fitted.forecast(i + 1));
-    results.push({ fitted, score: computeMetrics(test, predicted) });
+    // Score on rolling one-step forecasts: each prediction is made by a model
+    // fitted only on periods before that outcome. This avoids both look-ahead
+    // leakage and the bias that a single multi-step holdout gives to a flat
+    // mean. The model used for the published forecast is fitted on all history.
+    const predicted = actual.map((_, offset) => factory(values.slice(0, train.length + offset)).forecast(1));
+    const fitted = factory(values);
+    const gateStart = Math.max(1, n - 3);
+    const gateActual = actualValues.slice(gateStart);
+    const gateFitted = factory(values.slice(0, gateStart));
+    const gatePredicted = gateActual.map((_, offset) => gateFitted.forecast(offset + 1));
+    results.push({
+      fitted,
+      score: computeMetrics(actual, predicted),
+      gate: computeMetrics(gateActual, gatePredicted),
+      actual,
+      predicted,
+    });
   }
   return results;
 }
@@ -367,8 +554,11 @@ export interface ForecastOptions {
 export function forecastSeries(values: number[], options: ForecastOptions = {}): ForecastResult {
   const horizonMonths = Math.max(1, Math.min(24, options.horizon ?? 6));
   const frequency = options.frequency ?? "month";
+  const missingCount = values.filter((v) => !Number.isFinite(v)).length;
   const clean = values.map((v) => (Number.isFinite(v) && v > 0 ? v : 0));
   const n = clean.length;
+  const robust = winsorize(clean);
+  const modelValues = robust.values;
   const zeros = clean.filter((v) => v === 0).length;
   const zeroRatio = n > 0 ? zeros / n : 1;
   const intermittent = zeroRatio > 0.4;
@@ -381,8 +571,11 @@ export function forecastSeries(values: number[], options: ForecastOptions = {}):
       horizon: horizonMonths,
       points: Array.from({ length: horizonMonths }, (_, i) => ({ step: i + 1, value: 0, lo: 0, hi: 0 })),
       sigma: 0,
-      metrics: { mae: 0, rmse: 0, wape: 0, bias: 0 },
+      metrics: { mae: 0, rmse: 0, wape: 0, mape: null, bias: 0 },
       candidates: [],
+      backtest: null,
+      missingCount,
+      outlierCount: robust.outliers,
       intermittent: true,
       zeroRatio: 1,
       confidence: "low",
@@ -391,16 +584,46 @@ export function forecastSeries(values: number[], options: ForecastOptions = {}):
     };
   }
 
-  const factories = candidatesFor(clean, intermittent);
-  const candidates = evaluate(clean, factories);
-  // Lowest WAPE wins; MAE breaks ties. A simpler model is only preferred when it
-  // is at least as accurate, which is why the sort is stable on tie.
+  const factories = candidatesFor(intermittent, modelValues.length);
+  const candidates = evaluate(modelValues, factories, clean);
+  // Lowest WAPE wins; MAE breaks ties. Within a small tolerance the simpler
+  // model is preferred, because a tiny gain on a short history is usually noise.
   candidates.sort((a, b) => a.score.wape - b.score.wape || a.score.mae - b.score.mae);
-  const best = candidates[0]!;
+  const mostAccurate = candidates[0]!;
+  // A small accuracy gain does not justify a more complex model: on short
+  // monthly histories that difference is mostly noise and often reverses out of
+  // sample. Prefer the simplest model whose WAPE is within a small tolerance of
+  // the best one. This is the same idea as a one-standard-error rule.
+  const tolerance = Math.max(0.01, mostAccurate.score.wape * 0.1);
+  const simplicity: Record<ForecastMethod, number> = {
+    ses: 0,
+    mean: 1,
+    naive: 2,
+    holt: 3,
+    holt_winters: 4,
+    croston: 5,
+    sba: 6,
+    adida: 7,
+    tsb: 8,
+    zero: 9,
+  };
+  let best = candidates
+    .filter((candidate) => candidate.score.wape <= mostAccurate.score.wape + tolerance)
+    .sort((a, b) => simplicity[a.fitted.method] - simplicity[b.fitted.method])[0]!;
+  const sesCandidate = candidates.find((candidate) => candidate.fitted.method === "ses");
+  // Champion-challenger gate: SES stays in place unless the challenger beats it
+  // on a fixed three-step holdout. This protects the product from choosing a
+  // model on a two-month quirk that does not survive a longer horizon.
+  if (sesCandidate && best !== sesCandidate && best.gate.wape >= sesCandidate.gate.wape) {
+    best = sesCandidate;
+  }
 
-  // Residual sigma from in-sample one-step errors of the chosen model.
-  const residuals: number[] = [];
-  for (let i = 1; i < n; i++) residuals.push(clean[i]! - best.fitted.forecast(1));
+  // Sigma is the standard deviation of genuine one-step-ahead forecast errors:
+  // each prediction was made before its outcome was observed. Comparing the
+  // whole history with the final fitted level (the previous implementation)
+  // measures trend distance, not forecast error, and overstates safety stock on
+  // trending series. See Modern logistik, kap. 11.6, for the forecast-error rule.
+  const residuals = clean.slice(1).map((actual, i) => actual - (best.fitted.oneStep[i] ?? actual));
   const sigma = stdev(residuals);
 
   const scale = frequency === "week" ? 1 / 4.345 : frequency === "day" ? 1 / DAYS_PER_MONTH : 1;
@@ -415,6 +638,8 @@ export function forecastSeries(values: number[], options: ForecastOptions = {}):
     points.push({ step, value: round(value, 2), lo: round(Math.max(0, value - interval), 2), hi: round(value + interval, 2) });
   }
 
+  if (missingCount > 0) notes.push(`${missingCount} saknade värden behandlades som noll i historiken.`);
+  if (robust.outliers > 0) notes.push(`${robust.outliers} extremvärden kapades vid modellberäkningen men visas oförändrade i historiken.`);
   if (n < 6) notes.push(`Endast ${n} månader av historik. Prognosen är en grov uppskattning.`);
   if (intermittent) notes.push("Glest förekommande efterfrågan: Croston/SBA används i stället för exponentiell utjämning.");
   if (zeroRatio > 0.8) notes.push("Artikeln säljer i färre än vart femte månad. Prognosen bör läsas som en sannolikhet, inte ett belopp.");
@@ -432,12 +657,42 @@ export function forecastSeries(values: number[], options: ForecastOptions = {}):
     sigma: round(sigma, 3),
     metrics: best.score,
     candidates: candidates.map((c) => ({ method: c.fitted.method, metrics: c.score })),
+    backtest: { actual: best.actual, predicted: best.predicted },
+    missingCount,
+    outlierCount: robust.outliers,
     intermittent,
     zeroRatio: round(zeroRatio, 3),
     confidence,
     history: clean,
     notes,
   };
+}
+
+/** Wilson formula. Returns the unrounded economic order quantity. */
+export function economicOrderQuantity(annualDemand: number, orderCost: number, holdingRate: number, unitCost: number): number {
+  if (!(annualDemand > 0) || !(orderCost > 0) || !(holdingRate > 0) || !(unitCost > 0)) return 0;
+  return Math.sqrt((2 * annualDemand * orderCost) / (holdingRate * unitCost));
+}
+
+/**
+ * Standard deviation of demand during lead time when both daily demand and lead
+ * time can vary, assuming independent deviations:
+ *
+ *   sigma_DLT = sqrt((sigma_daily * LT)^2 + (dailyDemand * sigma_LT)^2)
+ *
+ * This is the SERV1 formulation in Modern logistik, kap. 11.6 (s. 293–295).
+ * When lead-time sigma is zero the expression reduces to the common
+ * demand-only formula. Both time arguments use days.
+ */
+export function sigmaDemandDuringLeadTime(
+  monthlySigma: number,
+  leadTimeDays: number,
+  dailyDemand: number,
+  leadTimeSigmaDays = 0,
+): number {
+  const demandSigma = Math.max(0, monthlySigma) * Math.sqrt(Math.max(0, leadTimeDays) / DAYS_PER_MONTH);
+  const leadSigma = Math.max(0, dailyDemand) * Math.max(0, leadTimeSigmaDays);
+  return Math.hypot(demandSigma, leadSigma);
 }
 
 /**
@@ -447,12 +702,19 @@ export function forecastSeries(values: number[], options: ForecastOptions = {}):
 export function supplyPlan(
   item: ItemInput,
   forecast: ForecastResult,
-  options: { serviceLevel?: number; horizonMonths?: number; leadTimeDays?: number; holdingRate?: number } = {},
+  options: {
+    serviceLevel?: number;
+    horizonMonths?: number;
+    leadTimeDays?: number;
+    leadTimeSigmaDays?: number;
+    holdingRate?: number;
+  } = {},
 ): SupplyPlan {
   const serviceLevel = options.serviceLevel ?? 0.95;
   const z = zScore(serviceLevel);
   const horizonMonths = options.horizonMonths ?? 3;
   const leadTimeDays = options.leadTimeDays ?? item.leadTimeDays ?? 30;
+  const leadTimeSigmaDays = Math.max(0, options.leadTimeSigmaDays ?? item.leadTimeSigmaDays ?? 0);
   const holdingRate = options.holdingRate ?? HOLDING_RATE;
 
   const available = Math.max(0, item.stock - Math.min(item.stock, Math.max(0, item.reserved ?? 0)));
@@ -460,7 +722,7 @@ export function supplyPlan(
   const forecastTotal = forecast.points.slice(0, horizonMonths).reduce((a, p) => a + p.value, 0);
   const daily = forecastMonthly / DAYS_PER_MONTH;
   const demandDuringLeadTime = daily * leadTimeDays;
-  const sigmaDuringLeadTime = forecast.sigma * Math.sqrt(leadTimeDays / DAYS_PER_MONTH);
+  const sigmaDuringLeadTime = sigmaDemandDuringLeadTime(forecast.sigma, leadTimeDays, daily, leadTimeSigmaDays);
 
   const safetyStock = z * sigmaDuringLeadTime;
   const reorderPoint = demandDuringLeadTime + safetyStock;
@@ -468,7 +730,7 @@ export function supplyPlan(
   // EOQ with a stated order cost and holding rate, then rounded up to MOQ.
   const annualDemand = forecastMonthly * 12;
   const unitCost = Math.max(1, item.cost);
-  const eoq = Math.sqrt((2 * annualDemand * ORDER_COST_SEK) / (holdingRate * unitCost));
+  const eoq = economicOrderQuantity(annualDemand, ORDER_COST_SEK, holdingRate, unitCost);
   const moq = item.moq ?? 1;
   // EOQ is a cycle quantity; the first order still has to cover the gap to the
   // reorder point. Taking the larger of the two keeps MOQ and available stock in
@@ -494,6 +756,8 @@ export function supplyPlan(
     forecastMonthly: round(forecastMonthly, 2),
     forecastTotal: round(forecastTotal, 2),
     leadTimeDays,
+    leadTimeSigmaDays: round(leadTimeSigmaDays, 2),
+    leadTimeVariabilityIncluded: leadTimeSigmaDays > 0,
     demandDuringLeadTime: round(demandDuringLeadTime, 2),
     sigmaDuringLeadTime: round(sigmaDuringLeadTime, 3),
     safetyStock: round(safetyStock, 1),

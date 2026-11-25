@@ -133,5 +133,30 @@ describe("analyze – kanter och fel", () => {
     expect(zScore(0.9)).toBeCloseTo(1.2816, 3);
     expect(zScore(0.95)).toBeCloseTo(1.6449, 3);
     expect(zScore(0.98)).toBeCloseTo(2.0537, 3);
+    expect(zScore(0.99)).toBeCloseTo(2.3263, 3);
+    // Tidigare föll alla nivåer utanför tabellen tyst tillbaka på 95 %.
+    expect(zScore(0.92)).toBeGreaterThan(1.2816);
+    expect(zScore(0.92)).toBeLessThan(1.6449);
+  });
+});
+
+describe("analyze – lönsamhet och MOQ", () => {
+  const items: ItemInput[] = [
+    item({ sku: "A", stock: 10, cost: 100, price: 200, moq: 12, monthly: steady(10) }),
+    item({ sku: "C", stock: 1000, cost: 10, price: 20, monthly: steady(5) }),
+  ];
+  const result = analyze(items, { months: 12 });
+
+  test("intäkt, COGS, bruttovinst och marginal hålls åtskilda från lagervärde", () => {
+    expect(result.kpis.salesValue).toBe(25_200); // 120 × 200 + 60 × 20
+    expect(result.kpis.cogsPeriod).toBe(12_600); // 120 × 100 + 60 × 10
+    expect(result.kpis.grossProfit).toBe(12_600);
+    expect(result.kpis.grossMarginPct).toBe(50);
+    expect(result.kpis.inventoryValue).toBe(11_000); // saldo × inköpspris
+  });
+
+  test("MOQ följer med till den analyserade artikeln", () => {
+    expect(result.items.find((i) => i.sku === "A")!.moq).toBe(12);
+    expect(result.items.find((i) => i.sku === "C")!.moq).toBeNull();
   });
 });

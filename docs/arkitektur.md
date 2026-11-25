@@ -190,21 +190,22 @@ fel. Det är hela poängen med konstruktionen.
 | Risk | Åtgärd |
 |---|---|
 | Lösenordsläcka | scrypt, unikt salt, konstant tidsjämförelse |
-| Sessionskapning | 32 byte slump, endast hash lagrad, HttpOnly + SameSite=Lax |
-| CSRF | Origin/Referer måste matcha värden på alla POST |
-| Triggning av annans data | `user_id` i varje `WHERE`, uuid som inte går att gissa |
-| Path traversal | `safeJoin()` för statiska filer, vitlista på filändelser |
+| Sessionskapning | 32 byte slump, endast hash lagrad, HttpOnly + SameSite=Lax, 14 dagars fast livstid; admin har separat cookie och tabell |
+| CSRF | Origin/Referer måste matcha exakt `APP_ORIGIN` på alla POST |
+| Triggning av annans data | `org_id` i varje `WHERE`; API svarar 404 för annan tenants id; roller läses från databasen vid varje begäran |
+| Path traversal | statiska filer serveras endast från en vitlista; uppladdade filer skrivs aldrig till disk |
 | XSS | allt som skrivs ut går genom `esc()` – även data från CSV |
 | Resursutmattning | 12 MB / 200 000 rader, `maxRequestBodySize` 13 MB |
-| Brute force | 8 inloggningsförsök per e-post och 15 minuter |
+| Brute force | 30 försök per IP och 8 per e-post/15 minuter; admin har separata gränser och dummy-scrypt |
 | Skrapning av kontaktformulär | 5 per timme per IP |
 | Klickkapning | `X-Frame-Options: DENY`, CSP `frame-ancestors 'none'` |
 | Datahemsprövning | ingen spårning, inga externa resurser i HTML |
-| Dataförlust | `sqlite3 .backup` dagligen (se README) |
+| Dataförlust | `VACUUM INTO`-backup enligt `docs/drift.md`; schemaläggning och kryptering är driftens ansvar |
 
-**Vad som inte är byggt:** tvåfaktorsautentisering, SSO, IP-tillåtelselista,
-kryptering av databasfilen i vila. För en B2B-tjänst med en handfull kunder är
-detta rätt avvägning – men det ska stå i avtalet att filen raderas efter analys.
+**Vad som inte är byggt:** kund-2FA, e-postverifiering, lösenordsåterställning,
+SSO, IP-tillåtelselista och kryptering av databasfilen i vila. Admin-2FA (TOTP)
+finns separat. För en B2B-tjänst med en handfull kunder är detta en medveten
+avvägning – men det ska stå i avtalet, och företagsdata kräver krypterad volym.
 
 ---
 
@@ -255,8 +256,9 @@ utrymmet är litet – men alltid med exakt belopp i tabellerna.
 - **Returer ingår inte** om de inte redan är avdragna i exporten.
 - **En process.** Startar den om tappar pågående uppladdningar sina utkast – det
   är acceptabelt, utkast är billiga att göra om.
-- **Ingen e-postutskick.** Lösenordsåterställning sker manuellt av dig. Det är
-  medvetet: ett e-postberoende är ett driftberoende.
+- **E-post är valfritt.** Utan `RESEND_API_KEY` och `MAIL_FROM` hamnar
+  transaktionella mejl i `mail_log` som `outbox`; länkar visas då även i
+  gränssnittet. Trialens livscykel använder samma kanal.
 
 Dessa är dokumenterade för att de ska kunna förklaras för en kund, inte för att
 de ska byggas bort i förtid.

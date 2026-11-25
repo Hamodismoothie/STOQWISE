@@ -126,3 +126,31 @@ describe("copilotens avsikter", () => {
     }
   });
 });
+
+describe("AI-beslutsstödets sex delar", () => {
+  const questions = [
+    "Vilka åtgärder ger störst effekt?",
+    "Vilka produkter riskerar att ta slut inom 14 dagar?",
+    "Vad bör vi beställa nu?",
+    "Visa inaktivt lager",
+    "Hur ser marginalen ut?",
+  ];
+
+  test("varje rekommendation redovisar identifierat, varför, data, åtgärd, effekt och osäkerhet", () => {
+    for (const q of questions) {
+      const a = ask(ctx, q);
+      expect(a.brief).toBeDefined();
+      for (const field of ["identified", "why", "data", "action", "effect", "uncertainty"] as const) {
+        expect(a.brief[field].length).toBeGreaterThan(5);
+      }
+      expect(a.grounded).toBe(true);
+    }
+  });
+
+  test("artikelsvar har samma sex delar", () => {
+    const a = ask(ctx, `Berätta om artikel ${dataset.items[0]!.sku}`);
+    expect(a.intent).toBe("item_lookup");
+    expect(a.brief.identified).toContain(dataset.items[0]!.sku);
+    expect(a.brief.data.length).toBeGreaterThan(5);
+  });
+});

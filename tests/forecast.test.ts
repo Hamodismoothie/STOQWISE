@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { forecastSeries, supplyPlan, normalCdf, normalLoss, aggregateSeries } from "../src/core/forecast.ts";
+import {
+  economicOrderQuantity,
+  forecastSeries,
+  supplyPlan,
+  normalCdf,
+  normalLoss,
+  aggregateSeries,
+  sigmaDemandDuringLeadTime,
+} from "../src/core/forecast.ts";
+import { zScore } from "../src/analysis.ts";
 import type { ItemInput } from "../src/dataset.ts";
 
 const item = (monthly: number[], overrides: Partial<ItemInput> = {}): ItemInput => ({
@@ -48,10 +57,27 @@ describe("prognosmotor", () => {
     }
   });
 
-  test("glest förekommande efterfrågan väljer Croston eller SBA", () => {
+  test("glest förekommande efterfrågan väljer en intermittent modell", () => {
     const result = forecastSeries([0, 0, 0, 5, 0, 0, 0, 0, 3, 0, 0, 0], { horizon: 3 });
     expect(result.intermittent).toBe(true);
-    expect(["croston", "sba", "naive"]).toContain(result.method);
+    expect(["croston", "sba", "tsb", "adida", "naive"]).toContain(result.method);
+  });
+
+  test("TSB och ADIDA backtestas som kandidater för intermittent efterfrågan", () => {
+    const result = forecastSeries([0, 0, 6, 0, 0, 0, 4, 0, 0, 0, 9, 0], { horizon: 3 });
+    const methods = result.candidates.map((candidate) => candidate.method);
+    expect(methods).toContain("tsb");
+    expect(methods).toContain("adida");
+    for (const candidate of result.candidates) {
+      expect(Number.isFinite(candidate.metrics.wape)).toBe(true);
+      expect(Number.isFinite(candidate.metrics.mae)).toBe(true);
+    }
+  });
+
+  test("TSB ger nollprognos utan att dividera med noll när serien är tom på efterfrågan", () => {
+    const result = forecastSeries(Array(12).fill(0), { horizon: 3 });
+    expect(result.points.every((point) => point.value === 0)).toBe(true);
+    expect(result.candidates.every((candidate) => Number.isFinite(candidate.metrics.wape))).toBe(true);
   });
 
   test("modellval rapporterar alla kandidater med mått", () => {
@@ -65,6 +91,15 @@ describe("prognosmotor", () => {
     // Den valda modellen ska vara den med lägst WAPE.
     const best = [...result.candidates].sort((a, b) => a.metrics.wape - b.metrics.wape)[0]!;
     expect(result.method).toBe(best.method);
+  });
+
+  test("sigma mäter ett-stegs prognosfel, inte avståndet till slutfacit", () => {
+    // En jämn trend kan följas nästan exakt ett steg framåt. Om sigma i stället
+    // jämför hela historiken med den sista nivån blir den orimligt stor och
+    // blåser upp säkerhetslagret.
+    const trend = Array.from({ length: 12 }, (_, i) => 10 + i * 10);
+    const result = forecastSeries(trend, { horizon: 3 });
+    expect(result.sigma).toBeLessThan(5);
   });
 
   test("tom historik ger nollprognos med låg konfidens", () => {
@@ -82,6 +117,31 @@ describe("prognosmotor", () => {
 });
 
 describe("lagerstyrning", () => {
+  test("Wilsonformeln återger bokens Flexilek-exempel (241 st.)", () => {
+    // Modern logistik, kap. 11.2, s. 277: D=1000, K=400, r=0,25, p=55.
+    expect(economicOrderQuantity(1000, 400, 0.25, 55)).toBeCloseTo(241.2, 1);
+  });
+
+  test("SERV1 kombinerar efterfråge- och ledtidsosäkerhet enligt bokens exempel", () => {
+    // Modern logistik, kap. 11.6, s. 294–295: veckoefterfrågan 19,2 st,
+    // sigma_d=3,99, LT=1 vecka, sigma_LT=0,12 veckor, SERV1=99 %.
+    const monthlySigma = 3.99 * Math.sqrt(30.44 / 7);
+    const sigma = sigmaDemandDuringLeadTime(monthlySigma, 7, 19.2 / 7, 0.12 * 7);
+    expect(sigma).toBeCloseTo(4.61, 1);
+    expect(zScore(0.99) * sigma).toBeCloseTo(10.7, 1);
+  });
+
+  test("ledtidsosäkerhet höjer säkerhetslagret och flaggas i planen", () => {
+    const stable = item(Array(12).fill(10), { leadTimeDays: 30 });
+    const uncertain = item(Array(12).fill(10), { leadTimeDays: 30, leadTimeSigmaDays: 5 });
+    const forecast = forecastSeries(stable.monthly!, { horizon: 3 });
+    const base = supplyPlan(stable, forecast);
+    const withLeadTime = supplyPlan(uncertain, forecast);
+    expect(base.leadTimeVariabilityIncluded).toBe(false);
+    expect(withLeadTime.leadTimeVariabilityIncluded).toBe(true);
+    expect(withLeadTime.safetyStock).toBeGreaterThan(base.safetyStock);
+  });
+
   test("beställningspunkt och säkerhetslager är positiva och konsistenta", () => {
     const it = item([20, 22, 19, 21, 23, 20, 18, 22, 21, 20, 24, 19]);
     const f = forecastSeries(it.monthly!, { horizon: 3 });
@@ -135,5 +195,47 @@ describe("aggregering", () => {
 
   test("returnerar null utan historik", () => {
     expect(aggregateSeries([{ monthly: null }])).toBeNull();
+  });
+});
+
+describe("prognosens datakvalitet", () => {
+  test("backtest sparar utfall och prognos och MAPE blir noll för jämn serie", () => {
+    const result = forecastSeries(Array(12).fill(10), { horizon: 3 });
+    expect(result.metrics.mape).toBe(0);
+    expect(result.backtest).not.toBeNull();
+    expect(result.backtest!.actual).toHaveLength(2);
+    expect(result.backtest!.predicted).toHaveLength(2);
+    expect(result.backtest!.actual).toEqual([10, 10]);
+  });
+
+  test("MAPE är null när ett utfall är noll, medan WAPE fortfarande är ett mått", () => {
+    const result = forecastSeries([0, 0, 5, 0, 0, 3, 0, 0, 0, 4, 0, 0], { horizon: 3 });
+    expect(result.metrics.mape).toBeNull();
+    expect(Number.isFinite(result.metrics.wape)).toBe(true);
+    expect(result.intermittent).toBe(true);
+  });
+
+  test("saknade värden räknas och behandlas som noll utan att krascha", () => {
+    const result = forecastSeries([10, 10, Number.NaN, 10, 10, 10, 10, 10, 10, 10, 10, 10], { horizon: 3 });
+    expect(result.missingCount).toBe(1);
+    expect(result.notes.some((n) => n.includes("saknade"))).toBe(true);
+    expect(result.points.every((p) => Number.isFinite(p.value))).toBe(true);
+  });
+
+  test("extremvärden kapas för modellen men backtestens utfall är oförändrat", () => {
+    const result = forecastSeries([10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 500], { horizon: 3 });
+    expect(result.outlierCount).toBe(1);
+    expect(result.notes.some((n) => n.includes("extremvärden"))).toBe(true);
+    expect(result.backtest!.actual).toContain(500);
+  });
+
+  test("EOQ avrundas uppåt till MOQ och beställningspunkten är summan av ledtidsbehov och säkerhetslager", () => {
+    const it = item(Array(12).fill(10), { stock: 100, cost: 100, moq: 12 });
+    const result = forecastSeries(it.monthly!, { horizon: 3 });
+    const plan = supplyPlan(it, result, { serviceLevel: 0.95 });
+    expect(plan.reorderPoint).toBeCloseTo(plan.demandDuringLeadTime + plan.safetyStock, 1);
+    expect(plan.orderQuantity % 12).toBe(0);
+    // EOQ = sqrt(2 × 120 × 350 / (0,22 × 100)) ≈ 61,8 → 72 efter MOQ-avrundning.
+    expect(plan.orderQuantity).toBe(72);
   });
 });

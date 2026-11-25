@@ -13,7 +13,41 @@
  */
 import { formatNumber, intlFor, type Locale } from "./i18n.ts";
 
+/**
+ * Pseudo-locale for CI. It is never user-selectable. Every translated string is
+ * wrapped so a rendered page can be checked for strings that never went through
+ * the app catalog, and every missing English key becomes a visible marker
+ * instead of silently falling back to Swedish.
+ */
+export const PSEUDO_LOCALE = "en-XA" as const;
+export const PSEUDO_OPEN = "⟦";
+export const PSEUDO_CLOSE = "⟧";
+export const PSEUDO_MISSING = `${PSEUDO_OPEN}missing:`;
+
 const EN: Record<string, string> = {
+  /* export guides and the pre-upload check */
+  "Exportguider": "Export guides",
+  "Menyväg och kolumner för de vanligaste affärs- och butikssystemen.": "Menu paths and columns for the most common business and store systems.",
+  "Menyväg och kolumner för de vanligaste affärs- och butikssystemen. Tar en till fem minuter.": "Menu paths and columns for the most common business and store systems. Takes one to five minutes.",
+  "Gå direkt till": "Jump to",
+  "Ungefär {n} minuter": "About {n} minutes",
+  "Menyväg": "Menu path",
+  "Kolumner som krävs": "Columns required",
+  "Officiell dokumentation": "Official documentation",
+  "Tillbaka till importen": "Back to imports",
+  "Samma krav oavsett system. Saknas en kolumn kan du mappa den manuellt i nästa steg.": "The same requirements in every system. If a column is missing you can map it manually in the next step.",
+  "Två kolumner räcker för att komma igång: saldo och inköpspris.": "Two columns are enough to start: stock and unit cost.",
+  "Hitta exporten i ditt system": "Find the export in your system",
+  "Öppna exportguiderna": "Open the export guides",
+  "Förhandskontroll av filen": "File pre-check",
+  "Allt som krävs finns: {found}.": "Everything required is present: {found}.",
+  "Saknas: {missing}.": "Missing: {missing}.",
+  "Lägg till kolumnen i exporten, eller mappa den manuellt i nästa steg.": "Add the column to the export, or map it manually in the next step.",
+  "Artikelidentitet: {header}.": "Item identity: {header}.",
+  "Ingen kolumn för artikelnummer eller benämning hittades. Lägg till en sådan i exporten.": "No column for item number or description was found. Add one to the export.",
+  "Excel kontrolleras först efter uppladdning. Förhandskontrollen gäller CSV.": "Excel is checked after upload. The pre-check covers CSV.",
+  "Filen verkar bara innehålla rubriker.": "The file seems to contain headers only.",
+  "Läser filens rubrikrad…": "Reading the header row…",
   /* ------------------------------------------------------------- shell */
   Översikt: "Overview",
   Artiklar: "Items",
@@ -30,6 +64,10 @@ const EN: Record<string, string> = {
   Sök: "Search",
   Tema: "Theme",
   "Byt tema": "Change theme",
+  "Byt till mörkt tema": "Switch to dark theme",
+  "Byt till ljust tema": "Switch to light theme",
+  "Rörelse av: aktivera animationer": "Motion off: resume animations",
+  "Rörelse: pausa animationer": "Motion: pause animations",
   "Logga ut": "Sign out",
   "Sök (⌘K)": "Search (⌘K)",
   "Snabbsök": "Quick search",
@@ -69,6 +107,8 @@ const EN: Record<string, string> = {
   "← Föregående": "← Previous",
   "Nästa →": "Next →",
   "Sida {page} av {pages}": "Page {page} of {pages}",
+  "Sortera": "Sort",
+  "Visar {from}–{to} av {total} artiklar.": "Showing {from}–{to} of {total} items.",
 
   /* --------------------------------------------------------- dashboard */
   Analys: "Analysis",
@@ -89,7 +129,7 @@ const EN: Record<string, string> = {
   "{n} artiklar · {units} enheter": "{n} items · {units} units",
   "{n} artiklar · {share} av värdet": "{n} items · {share} of value",
   "{n} artiklar över beställningspunkt": "{n} items above reorder point",
-  Lageromsättning: "Inventory turns",
+  Lageromsättning: "Inventory turnover",
   "{n} ggr/år": "{n}× per year",
   "{n} dagars liggtid": "{n} days of cover",
   "saknar historik": "no history",
@@ -108,7 +148,10 @@ const EN: Record<string, string> = {
     "Where capital sits against how predictable demand is.",
   "AX är kärnan: stort värde, jämn efterfrågan. CZ är kandidater för utförsäljning.":
     "AX is the core: high value, steady demand. CZ are clearance candidates.",
-  "Prioriterade åtgärder": "Priority actions",
+  "Prioriterade åtgärder": "Recommended actions",
+  "Visa alla åtgärder": "View all recommended actions",
+  "Åtgärder": "Recommended actions",
+  "Beräknad": "Calculated",
   "Poäng av kapitalvikt, åtgärdens allvar, marginalpåverkan och brådska.":
     "Scored by capital weight, action severity, margin impact and urgency.",
   "Alla →": "All →",
@@ -120,6 +163,7 @@ const EN: Record<string, string> = {
   "Högre värde = mer att åtgärda": "Higher value = more to address",
   "Lagervärde över tid": "Inventory value over time",
   "{n} mätpunkter i organisationen.": "{n} data points in the organisation.",
+  "{n} mätpunkter · en per importdag, senaste 24.": "{n} data points · one per import day, latest 24.",
   Lagerhälsokarta: "Inventory health map",
   "En ruta per artikel. Färg = åtgärdsbehov, intensitet = kapital.":
     "One square per item. Colour = action needed, intensity = capital.",
@@ -156,6 +200,7 @@ const EN: Record<string, string> = {
   Täckning: "Cover",
   "Inga artiklar matchar filtret.": "No items match the filter.",
   "{n} artiklar · lagervärde {value}": "{n} items · inventory value {value}",
+  "{n} artikel · lagervärde {value}": "{n} item · inventory value {value}",
   Nedskrivning: "Write-off",
   Realisera: "Liquidate",
   Minska: "Reduce",
@@ -192,8 +237,8 @@ const EN: Record<string, string> = {
     "Order quantity is EOQ (order cost SEK 350, holding rate 22%) rounded up to minimum order quantity.",
   "Saknar historik för att beräkna beställningspunkt.": "No history to calculate a reorder point.",
   Modelljämförelse: "Model comparison",
-  "Backtest på de tre senaste månaderna. Lägst WAPE vinner.":
-    "Backtest on the three most recent months. Lowest WAPE wins.",
+  "Backtest på de senaste månaderna. Lägst WAPE vinner.":
+    "Backtest on recent months. Lowest WAPE wins.",
   "Ingen backtest möjlig med så kort historik.": "No backtest possible with such short history.",
   "Lika artiklar": "Similar items",
   "Samma kategori, sorterade på kapital.": "Same category, sorted by capital.",
@@ -228,8 +273,12 @@ const EN: Record<string, string> = {
   "säsong, kräver 24 mån": "seasonal, requires 24 months",
   "Croston / SBA": "Croston / SBA",
   "glest förekommande efterfrågan": "intermittent demand",
-  "Valet sker per artikel på lägst WAPE i backtest mot de tre senaste månaderna. Ingen modell väljs för att den är avancerad.":
-    "The model is chosen per item on lowest WAPE in a backtest of the three most recent months. No model is chosen for being advanced.",
+  TSB: "TSB",
+  "sannolikhet × storlek": "probability × size",
+  ADIDA: "ADIDA",
+  "aggregerad efterfrågan per period": "aggregated demand per period",
+  "Valet sker per artikel på lägst WAPE i backtest mot de senaste månaderna. Ingen modell väljs för att den är avancerad.":
+    "The model is chosen per item on lowest WAPE in a backtest of recent months. No model is chosen for being advanced.",
   "Kategori Prognos": "Category forecast",
   "Aggregerad efterfrågan för {category}": "Aggregated demand for {category}",
   "Prognos och lagerstyrning per artikel": "Forecast and inventory control per item",
@@ -377,8 +426,8 @@ const EN: Record<string, string> = {
   "{used} av {limit} analyser använda den här månaden.": "{used} of {limit} analyses used this month.",
   "CSV eller Excel. Automatisk kolumnigenkänning, manuell justering i nästa steg.":
     "CSV or Excel. Automatic column detection, manual adjustment in the next step.",
-  "Max 12 MB och 500 000 rader. Filen sparas aldrig på disk, endast tolkade rader.":
-    "Max 12 MB and 500,000 rows. The file is never written to disk, only parsed rows are kept.",
+  "Max 12 MB och 200 000 rader. Filen sparas aldrig på disk, endast tolkade rader.":
+    "Max 12 MB and 200,000 rows. The file is never written to disk, only parsed rows are kept.",
   "Lager / enhet": "Warehouse / unit",
   "CSV-export": "CSV export",
   "Läs in och granska": "Load and review",
@@ -401,6 +450,20 @@ const EN: Record<string, string> = {
   Kolumnmappning: "Column mapping",
   "Förvalt utifrån rubriker och datans form. Ändra där det behövs.":
     "Pre-filled from headers and the shape of the data. Change where needed.",
+  "Föreslagen utifrån filens struktur och innehåll. Bekräfta eller ändra innan analysen.":
+    "Suggested from the file's structure and content. Confirm or change it before the analysis.",
+  Branschprofil: "Industry profile",
+  Föreslagna: "Suggested",
+  "Alla branscher": "All industries",
+  "Osäker identifiering": "Uncertain match",
+  "Konfidens {n} %": "Confidence {n}%",
+  "Underlaget räcker inte för en säker identifiering. Välj generell profil om du är osäker.":
+    "The data does not support a confident match. Choose the general profile if unsure.",
+  "Konfidens {n} %. Du kan alltid välja en annan profil.":
+    "Confidence {n}%. You can always choose another profile.",
+  "Du kan alltid välja en annan profil.": "You can always choose another profile.",
+  "Branschen styr standardvärden och vilka attribut som lyfts fram. Importerade värden ändras aldrig av en felaktig identifiering.":
+    "The industry controls defaults and which attributes are highlighted. Imported values are never changed by an incorrect match.",
   Inställningar: "Settings",
   "Fönster för inaktivt lager": "Inactive stock window",
   "Kör analys": "Run analysis",
@@ -408,6 +471,9 @@ const EN: Record<string, string> = {
   "Markera de kolumner som innehåller såld kvantitet per månad. Minst två ger säsong och XYZ.":
     "Select the columns containing units sold per month. At least two enable seasonality and XYZ.",
   "Varningar från tolkningen": "Warnings from parsing",
+  "Importvarningar": "Import warnings",
+  "Filen importerades, men dessa rader eller värden behövde justeras.": "The file was imported, but these rows or values needed adjustment.",
+  "Endast de första {n} varningarna visas.": "Only the first {n} warnings are shown.",
   Förhandsgranskning: "Preview",
 
   /* --------------------------------------------------------- integrations */
@@ -426,8 +492,8 @@ const EN: Record<string, string> = {
   Skapa: "Create",
   "Din roll kan se men inte hantera API-nycklar.": "Your role can view but not manage API keys.",
   Webhooks: "Webhooks",
-  "Signeras med HMAC-SHA256 i header X-Stoqwise-Signature.":
-    "Signed with HMAC-SHA256 in the X-Stoqwise-Signature header.",
+  "Signeras med HMAC-SHA256 i header X-STOQWISE-Signature.":
+    "Signed with HMAC-SHA256 in the X-STOQWISE-Signature header.",
   Endpoint: "Endpoint",
   Händelser: "Events",
   "Lägg till": "Add",
@@ -575,6 +641,10 @@ const EN: Record<string, string> = {
   "Försäljningsvärde": "Sales value",
   "Andel": "Share",
   "80 % av värdet": "80% of value",
+  "ABC räknas på kumulativ andel av försäljningsvärdet. A: andelen före artikeln < 80 %, B: 80–95 %, C: resten. Artikeln som passerar en gräns stannar i klassen före den.": "ABC is based on the cumulative share of sales revenue. A: share before the item < 80%, B: 80–95%, C: the rest. An item that crosses a boundary stays in the class before it.",
+  "Utan XYZ": "Without XYZ",
+  "15 %": "15%",
+  "5 %": "5%",
   "ABC/XYZ-matris (antal artiklar)": "ABC/XYZ matrix (item count)",
   "X: jämn": "X: steady",
   "Y: varierande": "Y: variable",
@@ -596,11 +666,13 @@ const EN: Record<string, string> = {
   "Saldo utöver förväntad efterfrågan under ledtid + {days} dagar, plus säkerhetslager.": "Stock above expected demand during lead time + {days} days, plus safety stock.",
   "Kumulativ andel av försäljningsvärde: A upp till 80 %, B upp till 95 %, C resterande.": "Cumulative share of sales value: A up to 80%, B up to 95%, C the remainder.",
   "Variationskoefficient i månadsförsäljning: X < 0,5, Y 0,5–1,0, Z > 1,0. Kräver minst 6 månader.": "Coefficient of variation in monthly sales: X < 0.5, Y 0.5–1.0, Z > 1.0. Requires at least 6 months.",
+  "Kumulativ andel av försäljningsvärde, räknad före aktuell artikel: A < 80 %, B 80–95 %, C resterande. Artikeln som passerar en gräns stannar i klassen före den.": "Cumulative share of sales revenue, measured before the current item: A < 80%, B 80–95%, C the remainder. An item that crosses a boundary stays in the class before it.",
+  "Variationskoefficient i månadsförsäljning: X < 0,5, Y 0,5–1,0, Z > 1,0. Kräver minst 6 månader; medelvärde 0 eller saknade värden ger ingen klass.": "Coefficient of variation in monthly sales: X < 0.5, Y 0.5–1.0, Z > 1.0. Requires at least 6 months; a zero mean or missing values give no class.",
   "Kapital i inaktiva artiklar × 25–55 % + överlager × 15–35 %. Realisationsgraden är en bedömning, inte ett utfall.": "Capital in inactive items × 25–55% + overstock × 15–35%. The realisation rate is an assessment, not an outcome.",
   "Datakvalitet": "Data quality",
   "Inga anmärkningar på underlaget.": "No remarks on the data.",
   "Om underlaget": "About the data",
-  "Analysen är framtagen av Stoqwise på uppdrag av {company}. Siffrorna är beräknade med deterministisk metod på det underlag som angivits ovan. Rapporten är beslutsunderlag, inte en garanti för ekonomiskt utfall.{contact}": "The analysis was prepared by Stoqwise on behalf of {company}. The figures are calculated with a deterministic method on the data stated above. The report is decision support, not a guarantee of financial outcome.{contact}",
+  "Analysen är framtagen av STOQWISE på uppdrag av {company}. Siffrorna är beräknade med deterministisk metod på det underlag som angivits ovan. Rapporten är beslutsunderlag, inte en garanti för ekonomiskt utfall.{contact}": "The analysis was prepared by STOQWISE on behalf of {company}. The figures are calculated with a deterministic method on the data stated above. The report is decision support, not a guarantee of financial outcome.{contact}",
   " Frågor: {email}": " Questions: {email}",
   "Inga artiklar i kategorin.": "No items in the category.",
   "Pris": "Price",
@@ -611,7 +683,7 @@ const EN: Record<string, string> = {
   "Roll": "Role",
   "Lager": "Inventory",
   "Optimering": "Optimization",
-  "AI-insikter": "AI insights",
+  "AI-insikter": "AI Decision Support",
   "Aktivitetslogg": "Activity log",
   "Visa eller dölj navigering": "Show or hide navigation",
   "Medlem sedan": "Member since",
@@ -725,6 +797,8 @@ const EN: Record<string, string> = {
   "Vilka artiklar binder mest kapital?": "Which items tie up the most capital?",
   "och pris-ID:n i miljön för att aktivera Stripe.": "and the price IDs in the environment to enable Stripe.",
   "Aktiv (sålt senaste 90 d)": "Active (sold in the last 90 days)",
+  "91–180 dagar": "91–180 days",
+  "181–365 dagar": "181–365 days",
   "Över 365 dagar": "Over 365 days",
   "Aldrig såld i perioden": "Never sold in the period",
   "z × standardavvikelse × roten ur (ledtid/30,44) med servicenivå {n} %.": "z × standard deviation × square root of (lead time/30.44) at a {n}% service level.",
@@ -885,6 +959,32 @@ const EN: Record<string, string> = {
   "Få ett estimat": "Get an estimate",
   "Månadspris, årspris och implementation.": "Monthly price, annual price and implementation.",
   "Begär offert": "Request a quote",
+  Provperiod: "Trial",
+  "Provperioden har tagit slut.": "Your trial has ended.",
+  "Provperioden har tagit slut": "Your trial has ended",
+  "Organisationen är i läsbart läge. All data finns kvar och kan läsas eller exporteras.": "The organisation is in read-only mode. All data remains and can be read or exported.",
+  "Exportera": "Export",
+  "Exportera data": "Export data",
+  "Läs mer": "Read more",
+  "för att fortsätta.": "to continue.",
+  "Sista dagen av provperioden.": "Last day of the trial.",
+  "Provperiod: {n} dagar kvar.": "Trial: {n} days left.",
+  "Provperioden slutar {date}.": "The trial ends {date}.",
+  "för att fortsätta efteråt.": "to continue afterwards.",
+  "Läsbart läge": "Read-only mode",
+  "Aktiv provperiod": "Active trial",
+  "Slutdatum": "End date",
+  "Dagar kvar": "Days left",
+  "{n} dagar från att organisationen skapades.": "{n} days from when the organisation was created.",
+  "Kom igång med din första analys": "Get started with your first analysis",
+  "Ladda upp en CSV- eller Excel-export. Analysen visar var kapitalet sitter, vad som riskerar att ta slut och vilka åtgärder som ger störst effekt.": "Upload a CSV or Excel export. The analysis shows where capital is tied up, what risks running out and which actions have the greatest effect.",
+  "Ladda upp en export från ert affärs- eller lagersystem.": "Upload an export from your business or inventory system.",
+  "Kontrollera kolumnmappningen. Vanliga kolumner känns igen automatiskt.": "Check the column mapping. Common columns are recognised automatically.",
+  "Läs analysen och ladda ner rapporten eller beställningsunderlaget.": "Read the analysis and download the report or purchase order.",
+  "Provperioden slutar {date}. Efteråt är organisationen läsbar och alla data finns kvar.": "The trial ends {date}. Afterwards the organisation is read-only and all data remains.",
+  "Organisationen är i läsbart läge. Det finns ingen analys att visa, men alla data som redan finns kan exporteras. Begär en offert för att aktivera en betald plan och öppna skrivåtkomsten igen.": "The organisation is in read-only mode. There is no analysis to show, but any existing data can be exported. Request a quote to activate a paid plan and restore write access.",
+  "Du kan läsa och exportera allt som finns kvar, men nya importer och analyser är blockerade.": "You can read and export everything that remains, but new imports and analyses are blocked.",
+  "När provperioden tar slut går organisationen över till läsbart läge. Data raderas inte och kan läsas eller exporteras.": "When the trial ends the organisation switches to read-only mode. Data is not deleted and can be read or exported.",
   "Ingen betalning aktiveras automatiskt.": "No payment is activated automatically.",
   "Uppdatera estimat": "Update estimate",
   "Beräkna mitt estimat": "Calculate my estimate",
@@ -901,6 +1001,9 @@ const EN: Record<string, string> = {
   "Personlig prissättning för {org}": "Personalised pricing for {org}",
   "Aktivering begärd · väntar på avtal": "Activation requested · awaiting agreement",
   "Offertförfrågan mottagen": "Quote request received",
+  "Offerten är hanterad": "Quote handled",
+  "Offertförfrågan avvisades": "Quote request declined",
+  "Planen är aktiverad": "Plan activated",
   "Post": "Line",
   "Per månad": "Per month",
   "Varje rad kommer från ett konfigurerat prisblock.": "Every line comes from a configured pricing block.",
@@ -1016,17 +1119,339 @@ const EN: Record<string, string> = {
   "Kunder": "Customers",
   "Sparad": "Saved",
   "Inga sparade scenarier ännu.": "No saved scenarios yet.",
+  "Pausa animationer": "Pause animations",
+  "Aktivera animationer": "Resume animations",
+  "Rörelse": "Motion",
+  "Rörelse av": "Motion off",
+  "Bidrag till lagerhälsan": "Contribution to inventory health",
+  "Import-id": "Import ID",
+  "Analys-id": "Analysis ID",
+  "Import": "Import",
+  "Inget kapital att frigöra": "No capital to release",
+  "Övriga kategorier": "Other categories",
+  "Alla artiklar har en XYZ-klass.": "Every item has an XYZ class.",
+  "{n} har noll efterfrågan": "{n} have zero demand",
+  "{n} har kortare historik än {months} månader": "{n} have less than {months} months of history",
+  "{n} saknar månadshistorik": "{n} have no monthly history",
+  "{n} har saknade värden i historiken": "{n} have missing values in the history",
+  "{n} av {total} artiklar kan inte XYZ-klassificeras tillförlitligt: {reasons}. Variationskoefficienten beräknas inte när medelefterfrågan är 0 eller underlaget är otillräckligt.": "{n} of {total} items cannot be XYZ-classified reliably: {reasons}. The coefficient of variation is not calculated when mean demand is 0 or the basis is insufficient.",
+  "Ingen månadshistorik finns, så efterfrågan kan inte klassificeras.": "There is no monthly history, so demand cannot be classified.",
+  "Historiken är kortare än 6 månader, så variationskoefficienten är inte tillförlitlig.": "The history is shorter than 6 months, so the coefficient of variation is not reliable.",
+  "Medelefterfrågan är noll. Variationskoefficienten beräknas inte och artikeln tvingas inte in i en XYZ-klass.": "Mean demand is zero. The coefficient of variation is not calculated and the item is not forced into an XYZ class.",
+  "Historiken innehåller saknade värden, så artikeln klassificeras inte.": "The history contains missing values, so the item is not classified.",
+  "{n} av {total} artiklar saknar efterfrågeklass (ingen försäljning i historiken).": "{n} of {total} items have no demand class (no sales in the history).",
+  "Inaktivt lager, överlager, bristrisk och rotation vägt samman. Drivarnas bidrag summerar till poängen; 100 = varje krona rör sig med efterfrågan.": "Inactive stock, overstock, stockout risk and turns weighted together. The driver contributions add up to the score; 100 = every krona moves with demand.",
+  "Inaktivt lager, överlager, bristrisk och rotation vägt samman. Bidragen avrundas till en decimal och summerar exakt till totalpoängen; 100 = varje krona rör sig med efterfrågan.": "Inactive stock, overstock, stockout risk and turns weighted together. Contributions are rounded to one decimal and add up exactly to the total score; 100 = every krona moves with demand.",
+  "{rate} realisationsgrad · inaktiva och överlager": "{rate} realisation rate · inactive stock and overstock",
+  "{rate} realisationsgrad · inaktiva artiklar": "{rate} realisation rate · inactive stock",
+  "{rate} realisationsgrad · överlager": "{rate} realisation rate · overstock",
+  "Lageröversikt": "Inventory overview",
+  "Balanserat": "Balanced",
+  "Slät yta": "Smooth surface",
+  "Streckad yta": "Striped surface",
+  "Prickad yta": "Dotted surface",
+  "artiklar": "items",
+  "{n} artiklar i {aisles} kategorier. A närmast docken, C längst bort.": "{n} items in {aisles} categories. A nearest the dock, C furthest away.",
+  "Syntetisk demodata, inte verkliga kunddata": "Synthetic demo data, not real customer data",
+  "Lagervärld": "Warehouse world",
+  "Tabell": "Table",
+  "Vy": "View",
+  "Visa i 3D": "Show in 3D",
+  "Visa i tabell": "Show in table",
+  "Öppna artikeln": "Open the item",
+  "Öppna Lager": "Open Inventory",
+  "Sök artikel": "Search item",
+  "Namn eller SKU": "Name or SKU",
+  "Överlagervärde": "Overstock value",
+  "Riskerad försäljning": "Revenue at risk",
+  "Tänk om": "What if",
+  "Återställ": "Reset",
+  "ggr/år": "turns/yr",
+  "Månadsreglage · utflöde mot dockan": "Month slider · outbound flow to the dock",
+  "Försäljningsintäkt": "Sales revenue",
+  "Försäljningsintäkt i period": "Sales revenue for the period",
+  "Inköpskostnad (COGS)": "Cost of goods sold (COGS)",
+  "Bruttovinst": "Gross profit",
+  "Lagervärde / kapitalbindning": "Inventory value / capital tied",
+  "Försäljningsvärde i lager": "Inventory at selling price",
+  "Samtliga fält som styr analysen. Värdena kommer från samma importerade datamängd som översikten.": "All fields that drive the analysis. Values come from the same imported dataset as the overview.",
+  "Lagerplats": "Storage location",
+  "Lagerstatus": "Stock status",
+  "Bruttomarginal per enhet": "Gross margin per unit",
+  "Ekonomi": "Economics",
+  "Inköpskostnad, intäkt och kapitalbindning är separata mått.": "Purchase cost, revenue and capital tied are separate measures.",
+  "Kapitalbindning": "Capital tied",
+  "Lagervärde och kapitalbindning värderas till inköpspris. Försäljningsvärde i lager värderas till försäljningspris och är inte en intäkt förrän varan säljs.": "Inventory value and capital tied are valued at purchase cost. Inventory at selling price is valued at the selling price and is not revenue until the item is sold.",
+  "Utfall mot prognos": "Actuals vs forecast",
+  "Backtest på de senaste månaderna. Utfall är faktisk försäljning, prognos är modellens skattning före perioden.": "Backtest on the most recent months. Actual is real sales; forecast is the model estimate made before the period.",
+  "Utfall": "Actual",
+  "Avvikelse": "Deviation",
+  "Ingen backtest är möjlig med så kort historik.": "No backtest is possible with such a short history.",
+  "Historik: {months} månader · {total} enheter · snitt {avg}/månad · senaste månad {last} · {zero} nollmånader.": "History: {months} months · {total} units · average {avg}/month · latest month {last} · {zero} zero months.",
+  "Identifierat": "Identified",
+  "Varför det är viktigt": "Why it matters",
+  "Data bakom": "Data behind it",
+  "Rekommenderad åtgärd": "Recommended action",
+  "Uppskattad ekonomisk effekt": "Estimated financial effect",
+  "Osäkerheter och antaganden": "Uncertainties and assumptions",
+  "Alla leverantörer": "All suppliers",
+  "Visar endast förslag från {supplier}.": "Showing suggestions from {supplier} only.",
+  "Alla leverantörer visas.": "All suppliers are shown.",
+  "Gruppera per leverantör": "Group by supplier",
+  "Visa som en lista": "Show as one list",
+  "Förväntad efterfrågan": "Expected demand",
+  "Efter leverans": "After delivery",
+  "Bristrisk utan order": "Stockout risk without order",
+  "{n} förslag · inköpsvärde {value}": "{n} suggestions · purchase value {value}",
+  "Sorterat på brådskande först, därefter inköpsvärde. Kvantiteten återställer beställningspunkten och täcker cirka {days} dagar, avrundad till MOQ.": "Sorted by urgency, then purchase value. The quantity restores the reorder point and covers about {days} days, rounded to MOQ.",
+  "Föreslagen kvantitet = högsta värdet av (beställningspunkt − saldo) och {days} dagars genomsnittlig efterfrågan, avrundad uppåt till MOQ.": "Suggested quantity = the higher of (reorder point − available) and average demand for {days} days, rounded up to MOQ.",
+  "Förväntad efterfrågan under ledtid och bristrisk kommer från prognosmotorn när månadshistorik finns. Utan historik används historiskt medelvärde och risken visas som –.": "Expected demand during lead time and stockout risk come from the forecast engine when monthly history exists. Without history, the historical average is used and risk is shown as –.",
+  "MOQ används när artikeln har en minsta orderkvantitet i underlaget. Saknas den antas 1 och kvantiteten måste kontrolleras mot avtal.": "MOQ is used when the item has a minimum order quantity in the source data. If missing, 1 is assumed and the quantity must be checked against the agreement.",
+  "Tabellvy": "Table view",
+  "Välj ett ställ i världen eller en rad i tabellen.": "Pick a rack in the world or a row in the table.",
+  "Klicka på ett ställ, eller sök och hoppa.": "Click a rack, or search and jump.",
+
+  /* ---------------------------------------------------- live warehouse */
+  "Alla zoner": "All zones",
+  Inleverans: "Inbound",
+  Lagring: "Storage",
+  Plockzon: "Picking area",
+  Packning: "Packing",
+  Utlastning: "Outbound",
+  "Slut i lager": "Out of stock",
+  "Under beställningspunkt": "Below reorder point",
+  "Kortare täckning än ledtid": "Less cover than lead time",
+  "Visualiseringsläge": "View mode",
+  Snabbfilter: "Quick filters",
+  "Alla artiklar": "All items",
+  "Endast överlager": "Overstock only",
+  "Endast bristrisk": "Stockout risk only",
+  "Endast inaktiva": "Inactive only",
+  "Spela upp flödet": "Play the flow",
+  Spela: "Play",
+  "Återställ saldo och tid": "Reset stock and time",
+  Zoner: "Zones",
+  Inaktivt: "Inactive",
+  Fyllnad: "Fill rate",
+  "nära utlastning": "near outbound",
+  "längst bort": "furthest away",
+  "Välj en artikel": "Select an item",
+  "Klicka på en pall eller en rad i tabellen.": "Select a pallet or a row in the table.",
+  Placering: "Location",
+  "Pallplatser": "Pallet positions",
+  "Pallfyllnad": "Pallet fill",
+  "Simulerad placering": "Simulated placement",
+  "Kamera": "Camera",
+  "Återställ kameran": "Reset camera",
+  "Föregående gång": "Previous aisle",
+  "Nästa gång": "Next aisle",
+  "Zooma in": "Zoom in",
+  "Zooma ut": "Zoom out",
+  "3D-vy av lagret. Piltangenter roterar, plus och minus zoomar, 0 återställer kameran.": "3D warehouse view. Arrow keys rotate, plus and minus zoom, 0 resets the camera.",
+  "Dra för att rotera · scroll för att zooma · shift-dra för att panorera": "Drag to orbit · scroll to zoom · shift-drag to pan",
+  "Snitt/månad": "Average/month",
+  "Efterfrågan, 12 mån": "Demand, 12 months",
+  Månadsförsäljning: "Monthly sales",
+  "Zooma hit": "Zoom to",
+  Påfyllningsbehov: "Replenishment requirements",
+  "Inget påfyllningsbehov i den här analysen.": "No replenishment requirements in this analysis.",
+  "Simulerad dag": "Simulated day",
+  Hastighet: "Speed",
+  Typ: "Type",
+  "Normal drift": "Normal operation",
+  Efterfrågetopp: "Demand peak",
+  Leveransstörning: "Supply disruption",
+  Stresscenario: "Stress scenario",
+  Anpassat: "Custom",
+  "Lager i simuleringen": "Inventory in the simulation",
+  "In idag": "In today",
+  "Ut idag": "Out today",
+  "Öppna ordrar": "Open orders",
+  "Förväntade leveranser": "Expected deliveries",
+  Beställningsbehov: "Reorder requirements",
+  Simuleringsscenario: "Simulation scenario",
+  "Extra försäljning": "Additional sales",
+  "Artikel för extra försäljning": "Item for additional sales",
+  "Försena leveranser": "Delay deliveries",
+  Nollställ: "Reset",
+
+  /* --------------------------------------------------- catalog gaps */
+  Övriga: "Other",
+  Efterfrågeprognos: "Demand forecast",
+  Fördelning: "Distribution",
+  "Omsättning mot marginal": "Turns vs margin",
+  "Varje punkt är en artikel: omsättningshastighet mot marginal, storlek efter lagervärde":
+    "Each point is an item: inventory turns against margin, sized by inventory value",
+  "Omsättning (ggr/år) →": "Turns (× per year) →",
+  "Marginal % →": "Margin % →",
+  "En ruta per artikel, färg efter åtgärdsbehov och intensitet efter lagervärde":
+    "One square per item, coloured by action needed and shaded by inventory value",
+  "DEMOMILJÖ  ·  EXEMPELDATA": "DEMO ENVIRONMENT  ·  SAMPLE DATA",
+  "Senaste körningarna.": "Recent runs.",
+  "Varje manuell import loggas med radantal, fel och varningar.":
+    "Every manual import is logged with row count, errors and warnings.",
+  "Produktdemonstration. Byt miljö:": "Product demo. Switch environment:",
+  "Inaktivitetsfönster": "Inactive stock window",
+  "Inga avvikande rörelser i historiken.": "No unusual movements in the history.",
+  "ABC / XYZ": "ABC / XYZ",
+  ABC: "ABC",
+  XYZ: "XYZ",
+  "Live Warehouse": "Live Warehouse",
+  "AX = stort värde, jämn efterfrågan. CZ = kandidater för utförsäljning.":
+    "AX = high value, steady demand. CZ = clearance candidates.",
+  "Kapitalvikt, allvar, marginal och brådska.": "Capital weight, severity, margin and urgency.",
+  "En ruta per artikel. Färg = åtgärdsbehov.": "One square per item. Colour = action needed.",
+  "Färg = andel inaktivt kapital": "Colour = share of inactive capital",
+  "Friskt kapital": "Healthy capital",
+  "Delvis inaktivt": "Partly inactive",
+  "Inaktivt kapital": "Inactive capital",
+  "Klicka på en ruta för att se artikel, åtgärd och lagervärde.":
+    "Select a square to see the item, its action and inventory value.",
+  "Omsättning mot marginal. Storlek = värde.": "Turns against margin. Size = value.",
+  Balanserad: "Balanced",
+  "Modellval, säkerhetslager och beställningspunkter.":
+    "Model selection, safety stock and reorder points.",
+  "Valet sker per artikel på lägst WAPE i backtest mot de senaste månaderna. Ingen modell väljs för att den är avancerad. MAPE visas endast när alla utfallsperioder är större än noll; WAPE är då det jämförbara måttet.":
+    "The model is selected per item by lowest WAPE in a backtest of recent months. No model is chosen for being advanced. MAPE is shown only when every outcome period is above zero; WAPE is then the comparable measure.",
+  "Ledtid (dagar)": "Lead time (days)",
+  Beställning: "Purchase order",
+  "Ladda ner CSV": "Download CSV",
+  "Ladda ner Excel": "Download Excel",
+  "Filen innehåller samtliga {n} förslag, grupperade per leverantör, redo att skickas till inköp.":
+    "The file contains all {n} suggestions, grouped by supplier, ready to send to purchasing.",
+
+  /* ---------------------------------------------------- deletion and selection */
+  " and {n} days of cover": " and {n} days of cover",
+  "{n} artiklar i {file} tas bort permanent.": "{n} items in {file} will be permanently deleted.",
+  "{n} av {total} artiklar tas bort permanent.": "{n} of {total} items will be permanently deleted.",
+  "0 markerade": "0 selected",
+  "All organisationsdata raderas i en transaktion. Misslyckas något steg rullas hela raderingen tillbaka.":
+    "All organization data is deleted in one transaction. If any step fails, the entire deletion is rolled back.",
+  "Analys, nyckeltal, ABC/XYZ och åtgärdsförslag räknas om från kvarvarande artiklar.":
+    "Analysis, KPIs, ABC/XYZ and suggested actions are recalculated from the remaining items.",
+  "Analyser du skapat i en organisation flyttas till en annan aktiv medlem. Organisationens data finns kvar.":
+    "Analyses you created in an organization are moved to another active member. The organization's data remains.",
+  "Analyser skapade av dig": "Analyses created by you",
+  "Andra organisationer och deras data påverkas inte.": "Other organizations and their data are not affected.",
+  "Anpassa scenario": "Adjust scenario",
+  "Artiklar kvar": "Items left",
+  "Artiklar med kortare täckning än ledtid": "Items with less cover than lead time",
+  Avbryt: "Cancel",
+  "Bekräfta med ditt lösenord": "Confirm with your password",
+  "Beräkningen utgår från tillgängligt saldo {stock}, ledtid {lead} dagar, säkerhetslager {safety} och beställningspunkt {reorder}. Ingen åtgärd är genomförd. Sandboxen är läsbar och sparar inget.":
+    "The calculation uses available stock {stock}, lead time {lead} days, safety stock {safety} and reorder point {reorder}. No action has been performed. The sandbox is read-only and stores nothing.",
+  "Copilot-samtal": "Copilot conversations",
+  "Data och integritet": "Data and privacy",
+  Dataset: "Dataset",
+  Data: "Data",
+  Scenarier: "Scenarios",
+  Meddelanden: "Messages",
+  "Schemalagda synkningar": "Scheduled syncs",
+  "Offertförfrågningar": "Quote requests",
+  "Kommersiella scenarier": "Commercial scenarios",
+  Granskningslogg: "Audit log",
+  "Inga importer ännu": "No imports yet",
+  "Detta är en permanent radering. All data i organisationen tas bort och kan inte återställas.":
+    "This is a permanent deletion. All data in the organization is removed and cannot be restored.",
+  "Detta är en permanent radering. Kontrollera urvalet innan du fortsätter.":
+    "This is a permanent deletion. Check the selection before continuing.",
+  "Ditt konto och dess personuppgifter raderas permanent. Det går inte att ångra.":
+    "Your account and its personal data are permanently deleted. This cannot be undone.",
+  "Ett konto som bara tillhörde den här organisationen loggas ut. Kontot kan logga in igen och skapa en ny organisation.":
+    "An account that belonged only to this organization is signed out. The account can sign in again and create a new organization.",
+  "Exporten innehåller fullständiga analysresultat, narrativ, indata och alla artikelrader. Radering av organisationen kräver ägarroll, organisationens namn och ditt lösenord. Radering av kontot kräver din e-postadress och ditt lösenord.":
+    "The export contains complete analysis results, narratives, input data and all item rows. Deleting the organization requires the owner role, the organization name and your password. Deleting the account requires your email address and password.",
+  "Exportera hela organisationen eller radera den permanent.": "Export the entire organization or delete it permanently.",
+  "Granskningsloggen för organisationen tas bort. En separat post om raderingen sparas utan organisationskoppling.":
+    "The organization's audit log is deleted. A separate record of the deletion is kept without an organization link.",
+  "Hela datasetet tas bort": "The entire dataset is deleted",
+  "Hela organisationen tas bort": "The entire organization is deleted",
+  "In total, {low}–{high} is assessed as releasable within 6–12 months, at a realisation rate of 25–55% of capital in inactive items and 15–35% of overstock. The range is conservatively set.":
+    "In total, {low}–{high} is assessed as releasable within 6–12 months, at a realisation rate of 25–55% of capital in inactive items and 15–35% of overstock. The range is conservatively set.",
+  Inaktiva: "Inactive",
+  "Inventory analysis: {company}": "Inventory analysis: {company}",
+  "Jag förstår att kontot raderas permanent.": "I understand that the account will be permanently deleted.",
+  "Jag förstår att organisationen och all dess data raderas permanent.":
+    "I understand that the organization and all its data will be permanently deleted.",
+  "Kontot kan inte raderas ännu eftersom du är ensam ägare till en eller flera organisationer.":
+    "The account cannot be deleted yet because you are the sole owner of one or more organizations.",
+  "Ladda ner en export först om du behöver behålla analysresultat eller artikelrader.":
+    "Download an export first if you need to keep analysis results or item rows.",
+  "Lagervärde som tas bort": "Inventory value being deleted",
+  "Markera {n}": "Select {n}",
+  "Markera alla på sidan": "Select all on this page",
+  "Markerade artiklar tas bort": "Selected items will be deleted",
+  "Medlemmarnas användarkonton finns kvar, men medlemskapet i organisationen tas bort.":
+    "Members' user accounts remain, but their membership in the organization is removed.",
+  "Modell {method} · konfidens {confidence} · WAPE {wape} · MAPE {mape}":
+    "Model {method} · confidence {confidence} · WAPE {wape} · MAPE {mape}",
+  "Möjligt vid realisering, intervall": "Potential at realisation, range",
+  Obegränsat: "Unlimited",
+  "Organisationen {name} raderas med analyser, artikelrader, importer, scenarier, samtal, integrationer, abonnemang och medlemskap.":
+    "The organization {name} is deleted together with analyses, item rows, imports, scenarios, conversations, integrations, subscription and memberships.",
+  Organisationer: "Organizations",
+  "Pallens fyllnadsgrad visar saldo": "Pallet fill level shows stock",
+  "Permanent radering av hela organisationen.": "Permanent deletion of the entire organization.",
+  "Prognoser, inköpsförslag och Lagervärld läser samma analys och ändras därför direkt.":
+    "Forecasts, purchase suggestions and Inventory world read the same analysis and therefore update immediately.",
+  Radera: "Delete",
+  "Radera artiklar": "Delete items",
+  "Radera artiklarna": "Delete the items",
+  "Radera dataset": "Delete dataset",
+  "Radera datasetet": "Delete the dataset",
+  "Radera hela organisationen": "Delete the entire organization",
+  "Radera kontot": "Delete the account",
+  "Radera markerade": "Delete selected",
+  "Radera mitt konto": "Delete my account",
+  "Radera organisationen": "Delete the organization",
+  "Radera organisationen först. När den är borta kan du radera kontot härifrån.":
+    "Delete the organization first. Once it is gone you can delete the account here.",
+  "Raderar…": "Deleting…",
+  "Radering av ditt personliga konto.": "Deletion of your personal account.",
+  "Raderingen kan inte ångras.": "The deletion cannot be undone.",
+  "Rapporter och exporter som redan laddats ner påverkas inte.":
+    "Reports and exports already downloaded are not affected.",
+  "Saldo × inköpspris": "Stock × unit cost",
+  "Skriv din e-postadress för att bekräfta": "Enter your email address to confirm",
+  "Skriv organisationens namn för att bekräfta": "Enter the organization name to confirm",
+  "Sparade vyer": "Saved views",
+  "Vad påverkas": "What is affected",
+  "Vad som händer": "What happens",
+  "Vad visar läget?": "What does the situation show?",
+  "Värde över ledtid + 30 dagars behov": "Value above lead time + 30 days of demand",
+  "Ytmönster visar XYZ: slät, streckad eller prickad": "Surface pattern shows XYZ: smooth, dashed or dotted",
+  "Årlig varukostnad / lagervärde": "Annual cost of goods / inventory value",
 };
 
 export type AppTranslate = (source: string, vars?: Record<string, string | number>) => string;
 
-/** Swedish source string in, locale-appropriate string out. */
-export function appText(locale: Locale, source: string, vars?: Record<string, string | number>): string {
-  const template = locale === "en" ? EN[source] ?? source : source;
+export function isPseudoLocale(locale: Locale): locale is typeof PSEUDO_LOCALE {
+  return locale === PSEUDO_LOCALE;
+}
+
+export function hasAppTranslation(source: string): boolean {
+  return Object.prototype.hasOwnProperty.call(EN, source);
+}
+
+function fill(template: string, vars?: Record<string, string | number>): string {
   if (!vars) return template;
   return template.replace(/\{(\w+)\}/g, (_, key: string) =>
     vars[key] === undefined ? `{${key}}` : String(vars[key]),
   );
+}
+
+/** Swedish source string in, locale-appropriate string out. */
+export function appText(locale: Locale, source: string, vars?: Record<string, string | number>): string {
+  if (isPseudoLocale(locale)) {
+    const translated = EN[source];
+    return fill(
+      translated === undefined
+        ? `${PSEUDO_MISSING}${source}${PSEUDO_CLOSE}`
+        : `${PSEUDO_OPEN}${translated}${PSEUDO_CLOSE}`,
+      vars,
+    );
+  }
+  return fill(locale === "en" ? EN[source] ?? source : source, vars);
 }
 
 export function appTranslator(locale: Locale): AppTranslate {
@@ -1057,7 +1482,7 @@ export function appSek(locale: Locale, value: number, compact = false): string {
 }
 
 export function appPct(locale: Locale, value: number, decimals = 1): string {
-  return `${appNum(locale, value, decimals)} %`;
+  return locale === "en" ? `${appNum(locale, value, decimals)}%` : `${appNum(locale, value, decimals)} %`;
 }
 
 export function appDate(locale: Locale, iso: string): string {
@@ -1093,6 +1518,8 @@ export function appMethod(locale: Locale, method: string): string {
       holt_winters: "Holt-Winters",
       croston: "Croston",
       sba: "SBA",
+      tsb: "TSB",
+      adida: "ADIDA",
       naive: "naivt medel",
       mean: "medelvärde",
       zero: "ingen historik",
@@ -1112,7 +1539,37 @@ export function appConfidence(locale: Locale, confidence: string): string {
  */
 export function appDynamic(locale: Locale, text: string): string {
   if (locale === "sv" || !text) return text;
+  return englishFormatting(translateDynamic(text));
+}
+
+/** Rewrites engine numbers into international English notation. */
+function englishFormatting(text: string): string {
+  return text
+    .replace(/\u00a0/g, " ")
+    .replace(/(\d) (?=\d{3}(?:\D|$))/g, "$1,")
+    .replace(/(\d),(\d)/g, "$1.$2")
+    .replace(/(\d) %/g, "$1%")
+    .replace(/([\d][\d,.]*) kr\b/g, "SEK $1")
+    .replace(/([\d][\d,.]*) Mkr\b/g, "SEK $1m")
+    .replace(/([\d][\d,.]*) tkr\b/g, "SEK $1k");
+}
+
+function translateDynamic(text: string): string {
   let m: RegExpMatchArray | null;
+  if ((m = text.match(/^(\d+) rader hoppades över eftersom saldo eller inköpspris saknades eller inte var ett tal\. Exempel: (.+)\.$/)))
+    return `${m[1]} rows were skipped because stock or unit cost was missing or not a number. Examples: ${m[2]}.`;
+  if ((m = text.match(/^(\d+) dubbletter på artikelnummer slogs ihop \(saldo och försäljning summerades\)\.$/)))
+    return `${m[1]} duplicate item numbers were merged (stock and sales were summed).`;
+  if ((m = text.match(/^(\d+) artiklar hade negativt saldo och sattes till 0\. Kontrollera om det beror på ej registrerade inleveranser\.$/)))
+    return `${m[1]} items had negative stock and were set to 0. Check whether the cause is unrecorded receipts.`;
+  if ((m = text.match(/^(\d+) artiklar saknar inköpspris\. Deras lagervärde räknas som 0, vilket underskattar det bundna kapitalet\.$/)))
+    return `${m[1]} items are missing a unit cost. Their inventory value is counted as 0, which underestimates tied-up capital.`;
+  if ((m = text.match(/^(\d+) artiklar saknar försäljningspris\. ABC-analysen använder då inköpspris i stället, vilket ger samma rangordning men lägre belopp\.$/)))
+    return `${m[1]} items are missing a selling price. ABC analysis then uses unit cost instead, which keeps the ranking but lowers the amount.`;
+  if ((m = text.match(/^Endast (\d+) månader av försäljningshistorik hittades\. XYZ-analys kräver minst 6 månader och hoppas över\.$/)))
+    return `Only ${m[1]} months of sales history were found. XYZ analysis needs at least 6 months and is skipped.`;
+  if ((m = text.match(/^(\d+) rader hade ett annat antal kolumner än rubrikraden \((.+) mot (\d+)\)\. Korta rader fylldes ut med tomma värden\.$/)))
+    return `${m[1]} rows had a different number of columns than the header row (${m[2]} against ${m[3]}). Short rows were padded with empty values.`;
   if ((m = text.match(/^(.+) % av lagervärdet i en artikel$/)))
     return `${m[1]}% of inventory value in one item`;
   if ((m = text.match(/^Överlager (\d+) enheter$/))) return `Overstock ${m[1]} units`;
@@ -1131,6 +1588,10 @@ export function appDynamic(locale: Locale, text: string): string {
 
   const exact: Record<string, string> = {
     "Ingen försäljning i perioden": "No sales in the period",
+    "Filen innehöll null-tecken som rensades bort.": "The file contained null characters, which were removed.",
+    "Filen innehåller inga rader.": "The file contains no rows.",
+    "Ingen månadsuppdelad historik hittades. Säsong och variation kan inte beräknas, så XYZ-analysen hoppas över. Inaktivt lager bedöms på hela perioden.":
+      "No monthly history was found. Seasonality and variation cannot be calculated, so XYZ analysis is skipped. Inactive stock is assessed over the whole period.",
     "Ingen registrerad försäljning under ett år": "Inactive stock for over a year",
     "Negativt täckningsbidrag": "Negative contribution margin",
     "Risk för brist inom ledtid": "Risk of stockout within lead time",
@@ -1177,7 +1638,7 @@ export function appDynamic(locale: Locale, text: string): string {
   if ((m = text.match(/^Prognos för (.+)$/))) return `Forecast for ${m[1]}`;
   if (text === "Reduktion över 30 % av överskottslagret kräver att efterfrågeprognosen är stabil. Backtesta prognosen innan beslutet.")
     return "A reduction above 30% of excess stock requires a stable demand forecast. Backtest the forecast before deciding.";
-  return text;
+  return appText("en", text);
 }
 
 /** Exposed for the catalog completeness test. */

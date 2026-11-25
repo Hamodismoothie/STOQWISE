@@ -11,7 +11,7 @@
 import PDFDocument from "pdfkit";
 import { join } from "node:path";
 import type { AnalysisResult, AnalyzedItem } from "./analysis.ts";
-import { appDate, appNum, appSek, appText } from "./i18n-app.ts";
+import { appDate, appDynamic, appNum, appSek, appText } from "./i18n-app.ts";
 import type { Locale } from "./i18n.ts";
 import type { Narrative } from "./insights.ts";
 
@@ -108,6 +108,14 @@ export interface ReportMeta {
 
 type Align = "left" | "right";
 
+/** Localised download name. The report id stays in the name so two exports
+ * from the same organisation never overwrite each other. */
+export function reportFileName(locale: Locale, analysisId?: string): string {
+  if (!analysisId) return locale === "sv" ? "exempelrapport.pdf" : "sample-report.pdf";
+  const base = locale === "sv" ? "lagerrapport" : "inventory-report";
+  return `${base}-${analysisId.slice(0, 8)}.pdf`;
+}
+
 interface Column {
   label: string;
   width: number;
@@ -136,13 +144,13 @@ export function buildPdf(
     },
   });
 
-  // Print uses static TTF instances. The screen face (Instrument Sans) ships as
+  // Print uses static TTF instances. The screen face (Geist Sans) ships as
   // one variable font, which PDFKit would flatten to a single weight, so the
   // report keeps Geist here rather than losing its bold/medium hierarchy.
   doc.registerFont("Sans", join(FONT_DIR, "geist-sans-400.ttf"));
   doc.registerFont("Sans-Medium", join(FONT_DIR, "geist-sans-500.ttf"));
   doc.registerFont("Sans-Bold", join(FONT_DIR, "geist-sans-700.ttf"));
-  // Newsreader survives only as the italic accent.
+  // The italic accent uses the 600 cut of the same family.
   doc.registerFont("Serif", join(FONT_DIR, "geist-sans-600.ttf"));
   doc.registerFont("Serif-Light", join(FONT_DIR, "geist-sans-400.ttf"));
   doc.registerFont("Serif-Italic", join(FONT_DIR, "newsreader-400-italic.ttf"));
@@ -310,13 +318,24 @@ export function buildPdf(
       { label: t("Andel"), width: W * 0.14, align: "right" },
     ],
     analysis.abc.map((a) => [
-      `${a.class} (${a.class === "A" ? t("80 % av värdet") : a.class === "B" ? "15 %" : "5 %"})`,
+      a.class,
       num(a.count),
       sek(a.value),
       sek(a.revenue),
       `${num(a.revenueShare, 0)} %`,
     ]),
   );
+  doc
+    .font("Sans")
+    .fontSize(7.5)
+    .fillColor(C.muted)
+    .text(
+      t("ABC räknas på kumulativ andel av försäljningsvärdet. A: andelen före artikeln < 80 %, B: 80–95 %, C: resten. Artikeln som passerar en gräns stannar i klassen före den."),
+      M,
+      y + 6,
+      { width: W },
+    );
+  y = doc.y + 6;
 
   if (analysis.matrix) {
     y += 14;
@@ -327,15 +346,17 @@ export function buildPdf(
       y,
       [
         { label: t("ABC \\ XYZ"), width: W * 0.28 },
-        { label: t("X: jämn"), width: W * 0.24, align: "right" },
-        { label: t("Y: varierande"), width: W * 0.24, align: "right" },
-        { label: t("Z: oregelbunden"), width: W * 0.24, align: "right" },
+        { label: t("X: jämn"), width: W * 0.18, align: "right" },
+        { label: t("Y: varierande"), width: W * 0.18, align: "right" },
+        { label: t("Z: oregelbunden"), width: W * 0.18, align: "right" },
+        { label: t("Utan XYZ"), width: W * 0.18, align: "right" },
       ],
       analysis.matrix.map((row) => [
         row.abc,
         num(row.x),
         num(row.y),
         num(row.z),
+        num(row.unclassified ?? 0),
       ]),
     );
     doc
@@ -498,8 +519,8 @@ export function buildPdf(
     [t("Inaktivt lager"), t("Ingen försäljning under {days} dagar trots saldo > 0.", { days: analysis.settings.deadStockDays })],
     [t("Överlager"), t("Saldo utöver förväntad efterfrågan under ledtid + {days} dagar, plus säkerhetslager.", { days: analysis.settings.overstockReviewDays })],
     [    t("Säkerhetslager"), t("z × standardavvikelse × roten ur (ledtid/30,44) med servicenivå {n} %.", { n: Math.round(analysis.settings.serviceLevel * 100) })],
-    [t("ABC"), t("Kumulativ andel av försäljningsvärde: A upp till 80 %, B upp till 95 %, C resterande.")],
-    [t("XYZ"), t("Variationskoefficient i månadsförsäljning: X < 0,5, Y 0,5–1,0, Z > 1,0. Kräver minst 6 månader.")],
+    [t("ABC"), t("Kumulativ andel av försäljningsvärde, räknad före aktuell artikel: A < 80 %, B 80–95 %, C resterande. Artikeln som passerar en gräns stannar i klassen före den.")],
+    [t("XYZ"), t("Variationskoefficient i månadsförsäljning: X < 0,5, Y 0,5–1,0, Z > 1,0. Kräver minst 6 månader; medelvärde 0 eller saknade värden ger ingen klass.")],
     [t("Frigjort kapital"), t("Kapital i inaktiva artiklar × 25–55 % + överlager × 15–35 %. Realisationsgraden är en bedömning, inte ett utfall.")],
     [t("Kapitalkostnad"), t("{n} % kalkylränta på bundet lagervärde.", { n: Math.round(analysis.settings.capitalCostRate * 100) })],
   ];
@@ -529,7 +550,7 @@ export function buildPdf(
         .font("Sans")
         .fontSize(8.4)
         .fillColor(C.inkSoft)
-        .text(warning, M + 12, y, { width: W - 12, lineGap: 2 });
+        .text(appDynamic(locale, warning), M + 12, y, { width: W - 12, lineGap: 2 });
       y = doc.y + 5;
     }
   }
@@ -573,11 +594,6 @@ export function buildPdf(
 }
 
 /* ------------------------------------------------------------------ utils */
-
-function date(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleDateString("sv-SE", { year: "numeric", month: "long", day: "numeric" });
-}
 
 function ensureSpace(doc: PDFKit.PDFDocument, y: number, needed: number): number {
   if (y + needed > A4.height - 60) {

@@ -32,6 +32,7 @@ db.exec(`
     password_hash TEXT NOT NULL,
     name          TEXT NOT NULL,
     company       TEXT,
+    locale        TEXT NOT NULL DEFAULT 'sv',
     created_at    TEXT NOT NULL
   );
 
@@ -92,6 +93,8 @@ export interface UserRow {
   password_hash: string;
   name: string;
   company: string | null;
+  locale: string;
+  status: "active" | "suspended";
   created_at: string;
 }
 
@@ -100,6 +103,7 @@ export function createUser(input: {
   passwordHash: string;
   name: string;
   company: string | null;
+  locale?: "sv" | "en";
 }): UserRow {
   const user: UserRow = {
     id: randomUUID(),
@@ -107,20 +111,28 @@ export function createUser(input: {
     password_hash: input.passwordHash,
     name: input.name.trim(),
     company: input.company?.trim() || null,
+    locale: input.locale === "en" ? "en" : "sv",
+    status: "active",
     created_at: now(),
   };
   db.query(
-    `INSERT INTO users (id, email, password_hash, name, company, created_at)
-     VALUES ($id, $email, $hash, $name, $company, $created)`,
+    `INSERT INTO users (id, email, password_hash, name, company, locale, created_at)
+     VALUES ($id, $email, $hash, $name, $company, $locale, $created)`,
   ).run({
     $id: user.id,
     $email: user.email,
     $hash: user.password_hash,
     $name: user.name,
     $company: user.company,
+    $locale: user.locale,
     $created: user.created_at,
   });
   return user;
+}
+
+/** Language changes from the switcher are per account, not per device. */
+export function updateUserLocale(userId: string, locale: "sv" | "en"): void {
+  db.query("UPDATE users SET locale = $l WHERE id = $u").run({ $l: locale, $u: userId });
 }
 
 export function findUserByEmail(email: string): UserRow | null {
@@ -147,16 +159,20 @@ export function createSession(userId: string, tokenHash: string, expiresAt: stri
   ).run({ $t: tokenHash, $u: userId, $e: expiresAt, $c: now() });
 }
 
-export function findSession(tokenHash: string): { user_id: string; expires_at: string } | null {
+export function findSession(tokenHash: string): { user_id: string; expires_at: string; created_at: string } | null {
   return (
     (db
-      .query("SELECT user_id, expires_at FROM sessions WHERE token_hash = $t")
-      .get({ $t: tokenHash }) as { user_id: string; expires_at: string } | null) ?? null
+      .query("SELECT user_id, expires_at, created_at FROM sessions WHERE token_hash = $t")
+      .get({ $t: tokenHash }) as { user_id: string; expires_at: string; created_at: string } | null) ?? null
   );
 }
 
 export function deleteSession(tokenHash: string): void {
   db.query("DELETE FROM sessions WHERE token_hash = $t").run({ $t: tokenHash });
+}
+
+export function deleteSessionsForUser(userId: string): void {
+  db.query("DELETE FROM sessions WHERE user_id = $u").run({ $u: userId });
 }
 
 export function deleteExpiredSessions(): void {
@@ -368,4 +384,87 @@ export function createLead(input: {
 export function countLeads(): number {
   const row = db.query("SELECT COUNT(*) AS c FROM leads").get() as { c: number };
   return row.c;
+}
+
+/* ------------------------------------------------------- password resets */
+
+/**
+ * A new request replaces any unused token for the same user: only the most
+ * recent link works, so a mailbox leak does not leave several live keys.
+ */
+export function createPasswordReset(userId: string, tokenHash: string, expiresAt: string): void {
+  const tx = db.transaction(() => {
+    db.query("DELETE FROM password_resets WHERE user_id = $u AND used_at IS NULL").run({ $u: userId });
+    db.query(
+      `INSERT INTO password_resets (id, user_id, token_hash, expires_at, created_at)
+       VALUES ($id, $u, $t, $e, $c)`,
+    ).run({ $id: randomUUID(), $u: userId, $t: tokenHash, $e: expiresAt, $c: now() });
+  });
+  tx();
+}
+
+export function findPasswordReset(tokenHash: string): { id: string; user_id: string; expires_at: string } | null {
+  return (
+    (db
+      .query("SELECT id, user_id, expires_at FROM password_resets WHERE token_hash = $t AND used_at IS NULL")
+      .get({ $t: tokenHash }) as { id: string; user_id: string; expires_at: string } | null) ?? null
+  );
+}
+
+/** Claims the token exactly once, so two concurrent submissions cannot both pass. */
+export function consumePasswordReset(id: string): boolean {
+  const result = db
+    .query("UPDATE password_resets SET used_at = $t WHERE id = $id AND used_at IS NULL")
+    .run({ $t: now(), $id: id });
+  return Number(result.changes ?? 0) === 1;
+}
+
+export function deletePasswordResetsForUser(userId: string): void {
+  db.query("DELETE FROM password_resets WHERE user_id = $u").run({ $u: userId });
+}
+
+export function updateUserPassword(userId: string, passwordHash: string): void {
+  db.query("UPDATE users SET password_hash = $h WHERE id = $u").run({ $h: passwordHash, $u: userId });
+}
+
+/* --------------------------------------------------------------- mail log */
+
+export function logMail(input: {
+  toEmail: string;
+  subject: string;
+  kind: string;
+  status: "sent" | "outbox" | "failed";
+  providerId: string | null;
+  error: string | null;
+  body: string | null;
+}): void {
+  db.query(
+    `INSERT INTO mail_log (to_email, subject, kind, status, provider_id, error, body, created_at)
+     VALUES ($to, $subject, $kind, $status, $provider, $error, $body, $created)`,
+  ).run({
+    $to: input.toEmail,
+    $subject: input.subject,
+    $kind: input.kind,
+    $status: input.status,
+    $provider: input.providerId,
+    $error: input.error,
+    $body: input.body,
+    $created: now(),
+  });
+}
+
+export function recentMail(limit = 20) {
+  return db
+    .query(
+      `SELECT to_email, subject, kind, status, error, created_at
+       FROM mail_log ORDER BY id DESC LIMIT $l`,
+    )
+    .all({ $l: limit }) as Array<{
+    to_email: string;
+    subject: string;
+    kind: string;
+    status: string;
+    error: string | null;
+    created_at: string;
+  }>;
 }

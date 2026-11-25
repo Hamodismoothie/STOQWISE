@@ -273,8 +273,15 @@ export function estimatePage(input: PageContext & {
       ? t("Aktivering begärd · väntar på avtal")
       : status === "requested"
         ? t("Offertförfrågan mottagen")
-        : status;
+        : status === "handled"
+          ? t("Offerten är hanterad")
+          : status === "declined"
+            ? t("Offertförfrågan avvisades")
+            : status === "activated"
+              ? t("Planen är aktiverad")
+              : status;
   const lines = table({
+    locale,
     columns: [
       { key: "line", label: t("Post") },
       { key: "detail", label: t("Underlag") },
@@ -288,6 +295,7 @@ export function estimatePage(input: PageContext & {
     caption: t("Varje rad kommer från ett konfigurerat prisblock."),
   });
   const implementation = table({
+    locale,
     columns: [
       { key: "line", label: t("Post") },
       { key: "detail", label: t("Omfattning") },
@@ -515,6 +523,7 @@ export function commercialPage(input: PageContext & {
       title: t("Sparade scenarier"),
       body: input.scenarios.length
         ? table({
+    locale,
             columns: [
               { key: "name", label: t("Namn") },
               { key: "customers", label: t("Kunder") },

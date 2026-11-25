@@ -5,11 +5,16 @@
  */
 import type { Role } from "../data/repo.ts";
 import { EMAILS } from "../brand.ts";
-import { can, limitsFor, planLimits } from "../data/repo.ts";
+import { can, planLimits, type OrgEntitlements } from "../data/repo.ts";
+import { trialState } from "../trial-state.ts";
 import type { IntegrationDefinition } from "../integrations/index.ts";
-import { alert, badge, card, emptyState, esc, flash, icon, shell, table } from "../ui/base.ts";
+import { alert, badge, brandLockup, card, emptyState, esc, flash, icon, shell, table } from "../ui/base.ts";
 import { appDate, appDateTime, appNum, appPct, appSek, appText, appTranslator } from "../i18n-app.ts";
-import type { Locale } from "../i18n.ts";
+import { dirFor, type Locale } from "../i18n.ts";
+import type { AccountDeletionSummary, OrganizationCounts } from "../data/privacy.ts";
+import { INDUSTRY_ORDER, INDUSTRY_PROFILES, type IndustryDetection, type IndustryId } from "../industry.ts";
+import { clientRules } from "../mapping.ts";
+import { EXPORT_GUIDES } from "../export-guides.ts";
 import type { PageContext } from "./core.ts";
 
 const num = (locale: Locale, n: number, d = 0): string => appNum(locale, n, d);
@@ -22,52 +27,108 @@ const dateTime = (locale: Locale, iso: string): string => appDateTime(locale, is
 /* ---------------------------------------------------------------- imports */
 
 export function importsPage(input: PageContext & {
-  analyses: Array<{ id: string; filename: string; rows: number; created_at: string; source: string | null }>;
-  imports: Array<{ id: string; filename: string; source: string; rows: number; imported: number; skipped: number; status: string; error: string | null; started_at: string }>;
+  analyses: Array<{
+    id: string;
+    filename: string;
+    rows: number;
+    created_at: string;
+    source: string | null;
+    import_id: string | null;
+    imported_at: string | null;
+    imported_rows: number | null;
+    import_status: string | null;
+  }>;
+  imports: Array<{ id: string; analysis_id: string | null; filename: string; source: string; rows: number; imported: number; skipped: number; status: string; error: string | null; started_at: string }>;
   limit: number;
   usedThisMonth: number;
+  canDelete: boolean;
 }): string {
   const locale = input.locale;
   const t = appTranslator(locale);
+
+  // The browser check reads the same aliases as `detectMapping`, built here so
+  // the two cannot drift apart.
+  const rules = clientRules();
+  const fieldLabels: Record<string, string> = { stock: t("Lagersaldo"), cost: t("Inköpspris") };
+  const checkRules = JSON.stringify({
+    required: rules.required.map((field) => ({
+      key: field.key,
+      label: fieldLabels[field.key] ?? field.key,
+      aliases: field.aliases,
+    })),
+    identity: { aliases: rules.identity },
+    text: {
+      title: t("Förhandskontroll av filen"),
+      ok: t("Allt som krävs finns: {found}."),
+      missing: t("Saknas: {missing}."),
+      hint: t("Lägg till kolumnen i exporten, eller mappa den manuellt i nästa steg."),
+      identity: t("Artikelidentitet: {header}."),
+      identityMissing: t("Ingen kolumn för artikelnummer eller benämning hittades. Lägg till en sådan i exporten."),
+      excel: t("Excel kontrolleras först efter uppladdning. Förhandskontrollen gäller CSV."),
+      empty: t("Filen verkar bara innehålla rubriker."),
+      checking: t("Läser filens rubrikrad…"),
+    },
+  }).replace(/</g, "\\u003c");
+
   const history = input.imports.length
     ? table({
+    locale,
         columns: [
+          { key: "id", label: t("Import-id") },
           { key: "filename", label: t("Fil") },
           { key: "source", label: t("Källa") },
           { key: "rows", label: t("Rader"), align: "right" },
           { key: "imported", label: t("Artiklar"), align: "right" },
           { key: "skipped", label: t("Överhoppade"), align: "right" },
+          { key: "analysis", label: t("Analys") },
           { key: "status", label: t("Status") },
           { key: "started", label: t("Tid") },
         ],
         rows: input.imports.map((i) => ({
+          id: `<span class="mono" title="${esc(i.id)}">#${esc(i.id.slice(0, 8))}</span>`,
           filename: esc(i.filename),
           source: esc(i.source),
           rows: sv(locale, i.rows),
           imported: sv(locale, i.imported),
           skipped: sv(locale, i.skipped),
-          status: i.status === "ok" ? badge("Klar", "ok") : i.status === "failed" ? badge("Fel", "danger") : badge("Pågår", "warn"),
+          analysis: i.analysis_id
+            ? `<a class="link-btn mono" href="/app?analys=${esc(i.analysis_id)}" title="${esc(i.analysis_id)}">#${esc(i.analysis_id.slice(0, 8))}</a>`
+            : "–",
+          status: i.status === "ok"
+            ? badge(t("Klar"), "ok")
+            : i.status === "failed"
+              ? `<span title="${esc(i.error ?? "")}">${badge(t("Fel"), "danger")}</span>`
+              : badge(t("Pågår"), "warn"),
           started: `<span class="tag-inline">${dateTime(locale, i.started_at)}</span>`,
         })),
         empty: t("Inga importer ännu."),
       })
-    : emptyState("Inga importer ännu", "Ladda upp en CSV eller Excel-fil för att komma igång.");
+    : emptyState(t("Inga importer ännu"), t("Ladda upp en CSV eller Excel-fil för att komma igång."));
 
   const analyses = input.analyses.length
     ? table({
+    locale,
         columns: [
           { key: "filename", label: t("Analys") },
+          { key: "id", label: t("Analys-id") },
+          { key: "import", label: t("Import") },
           { key: "rows", label: t("Artiklar"), align: "right" },
           { key: "source", label: t("Källa") },
           { key: "created", label: t("Skapad") },
           { key: "open", label: "" },
+          ...(input.canDelete ? [{ key: "del", label: "" }] : []),
         ],
         rows: input.analyses.map((a) => ({
-          filename: esc(a.filename),
+          filename: `<a class="link-btn" href="/app?analys=${a.id}">${esc(a.filename)}</a>`,
+          id: `<span class="mono" title="${esc(a.id)}">#${esc(a.id.slice(0, 8))}</span>`,
+          import: a.import_id
+            ? `<span class="mono" title="${esc(a.import_id)}">#${esc(a.import_id.slice(0, 8))}</span><br><span class="tag-inline">${a.imported_at ? dateTime(locale, a.imported_at) : "–"}</span>`
+            : `<span class="muted">${t("saknas")}</span>`,
           rows: sv(locale, a.rows),
           source: esc(a.source ?? "csv"),
-          created: date(locale, a.created_at),
+          created: dateTime(locale, a.created_at),
           open: `<a class="link-btn" href="/app?analys=${a.id}">${t("Öppna →")}</a>`,
+          del: `<a class="link-btn is-danger" href="/app/radera?analys=${esc(a.id)}" title="${esc(t("Radera dataset"))}">${t("Radera")}</a>`,
         })),
       })
     : "";
@@ -86,12 +147,13 @@ export function importsPage(input: PageContext & {
     <div class="grid">
       <section class="card span-7"><div class="card-head"><div><h2>${t("Ny import")}</h2><p>${t("CSV eller Excel. Automatisk kolumnigenkänning, manuell justering i nästa steg.")}</p></div></div>
         <div class="card-body">
-          <form method="post" action="/app/importera" enctype="multipart/form-data" data-busy="${t("Läser filen…")}">
+          <form method="post" action="/app/importera" enctype="multipart/form-data" data-busy="${t("Läser filen…")}" data-import-check>
             <div class="form-row">
               <label for="file">${t("Fil")}</label>
               <input id="file" name="file" type="file" accept=".csv,.txt,.tsv,.xlsx" required>
-              <span class="hint">${t("Max 12 MB och 500 000 rader. Filen sparas aldrig på disk, endast tolkade rader.")}</span>
+              <span class="hint">${t("Max 12 MB och 200 000 rader. Filen sparas aldrig på disk, endast tolkade rader.")}</span>
             </div>
+            <div class="import-check" data-import-check-slot aria-live="polite" hidden></div>
             <div class="field-grid">
               <div class="form-row"><label for="lager">${t("Lager / enhet")}</label>
                 <input id="lager" name="lager" type="text" placeholder="Huvudlager" maxlength="60"></div>
@@ -115,11 +177,278 @@ export function importsPage(input: PageContext & {
           <li><strong>${t("Försäljning")}</strong> ${t("antingen som månadskolumner (2025-01 …) eller som total kvantitet")}</li>
           <li>${t("Artikelnummer, benämning, kategori, leverantör, ledtid och minsta orderkvantitet höjer kvaliteten")}</li>
         </ul>
-        <p class="hint mt-4">${t("Kolumnnamn känns igen på svenska och engelska. Saknas något kan du mappa manuellt.")}</p>`,
+        `,
       })}
 
-      ${card({ span: 12, title: t("Importhistorik"), subtitle: t("Varje körning loggas med radantal, fel och varningar."), body: history })}
+      ${card({
+        span: 12,
+        title: t("Hitta exporten i ditt system"),
+        subtitle: t("Menyväg och kolumner för de vanligaste affärs- och butikssystemen. Tar en till fem minuter."),
+        body: `<p style="margin:0 0 12px;font-size:13.5px;line-height:1.9">${EXPORT_GUIDES.map(
+          (guide) => `<a class="link-btn" href="/app/importera/guider#${guide.id}" style="white-space:normal;overflow-wrap:anywhere">${esc(guide.name)}</a>`,
+        ).join('<span class="hint" aria-hidden="true"> · </span>')}</p>
+          <a class="btn btn-ghost btn-sm" href="/app/importera/guider">${t("Öppna exportguiderna")} ${icon("arrow", 13)}</a>`,
+      })}
+
+      ${card({ span: 12, title: t("Importhistorik"), subtitle: t("Senaste körningarna."), body: history })}
       ${analyses ? card({ span: 12, title: t("Analyser"), body: analyses }) : ""}
+    </div>
+    <script type="application/json" id="import-check-rules">${checkRules}</script>
+    <script src="/app-import.js?v=1" defer></script>`,
+  });
+}
+
+/* ----------------------------------------------------- privacy and erasure */
+
+export function deleteOrganizationPage(input: PageContext & {
+  orgId: string;
+  counts: OrganizationCounts;
+}): string {
+  const locale = input.locale;
+  const t = appTranslator(locale);
+  const removed = [
+    ["Analyser", input.counts.analyses],
+    ["Artikelrader", input.counts.itemRows],
+    ["Importer", input.counts.imports],
+    ["Scenarier", input.counts.scenarios],
+    ["Sparade vyer", input.counts.savedViews],
+    ["Copilot-samtal", input.counts.conversations],
+    ["Meddelanden", input.counts.messages],
+    ["API-nycklar", input.counts.apiKeys],
+    ["Webhooks", input.counts.webhooks],
+    ["Schemalagda synkningar", input.counts.syncSchedules],
+    ["Abonnemang", input.counts.subscriptions],
+    ["Offertförfrågningar", input.counts.pricingQuotes],
+    ["Kommersiella scenarier", input.counts.commercialScenarios],
+    ["Medlemmar", input.counts.members],
+    ["Inbjudningar", input.counts.invitations],
+    ["Granskningslogg", input.counts.auditRows],
+  ];
+
+  return shell({
+    locale,
+    path: input.url.pathname + input.url.search,
+    title: t("Radera organisationen"),
+    active: "settings",
+    user: input.user,
+    org: input.org,
+    role: input.role,
+    subtitle: t("Permanent radering av hela organisationen."),
+    content: `
+    ${flash(input.url, locale)}
+    <div class="grid">
+      ${card({
+        span: 7,
+        title: t("Hela organisationen tas bort"),
+        body: `
+          ${alert(esc(t("Detta är en permanent radering. All data i organisationen tas bort och kan inte återställas.")), "error")}
+          <p>${t("Organisationen {name} raderas med analyser, artikelrader, importer, scenarier, samtal, integrationer, abonnemang och medlemskap.", { name: esc(input.org.name) })}</p>
+          <dl class="kv" style="margin:16px 0">
+            ${removed.map(([label, value]) => `<div><dt>${t(String(label))}</dt><dd>${sv(locale, Number(value))}</dd></div>`).join("")}
+          </dl>
+          <form method="post" action="/app/radera/organisation" class="mt-4" data-busy="${t("Raderar…")}">
+            <input type="hidden" name="org" value="${esc(input.orgId)}">
+            <div class="form-row"><label for="bekrafta">${t("Skriv organisationens namn för att bekräfta")}</label>
+              <input id="bekrafta" name="bekrafta" type="text" required autocomplete="off" placeholder="${esc(input.org.name)}"></div>
+            <div class="form-row"><label for="losenord">${t("Bekräfta med ditt lösenord")}</label>
+              <input id="losenord" name="losenord" type="password" required autocomplete="current-password"></div>
+            <label class="check"><input type="checkbox" name="forstaatt" value="ja" required>
+              <span>${t("Jag förstår att organisationen och all dess data raderas permanent.")}</span></label>
+            <div class="flex gap-2 mt-4">
+              <button class="btn btn-danger" type="submit">${icon("trash", 16)} ${t("Radera organisationen")}</button>
+              <a class="btn btn-ghost" href="/app/installningar">${t("Avbryt")}</a>
+            </div>
+          </form>`,
+      })}
+      ${card({
+        span: 5,
+        title: t("Vad som händer"),
+        body: `<ul class="prose" style="margin:0;padding-left:18px;font-size:13.5px">
+          <li>${t("All organisationsdata raderas i en transaktion. Misslyckas något steg rullas hela raderingen tillbaka.")}</li>
+          <li>${t("Medlemmarnas användarkonton finns kvar, men medlemskapet i organisationen tas bort.")}</li>
+          <li>${t("Ett konto som bara tillhörde den här organisationen loggas ut. Kontot kan logga in igen och skapa en ny organisation.")}</li>
+          <li>${t("Andra organisationer och deras data påverkas inte.")}</li>
+          <li>${t("Granskningsloggen för organisationen tas bort. En separat post om raderingen sparas utan organisationskoppling.")}</li>
+        </ul>
+        <p class="hint mt-4">${t("Ladda ner en export först om du behöver behålla analysresultat eller artikelrader.")}</p>
+        <a class="btn btn-ghost" href="/app/export">${icon("download", 15)} ${t("Exportera all data (JSON)")}</a>`,
+      })}
+    </div>`,
+  });
+}
+
+export function deleteAccountPage(input: {
+  locale: Locale;
+  user: { id: string; name: string; email: string };
+  org: { name: string; plan: string } | null;
+  role: Role | null;
+  url: URL;
+  summary: AccountDeletionSummary;
+}): string {
+  const locale = input.locale;
+  const t = appTranslator(locale);
+  const blocked = input.summary.soleOwned.length > 0;
+  const title = t("Radera kontot");
+
+  const soleOwnerLinks = input.summary.soleOwned
+    .map(
+      (membership) => `<li><a class="link-btn is-danger" href="/app/radera/organisation?org=${encodeURIComponent(membership.orgId)}">${esc(membership.orgName)}</a></li>`,
+    )
+    .join("");
+
+  const body = blocked
+    ? `
+      ${alert(esc(t("Kontot kan inte raderas ännu eftersom du är ensam ägare till en eller flera organisationer.")), "error")}
+      <p>${t("Radera organisationen först. När den är borta kan du radera kontot härifrån.")}</p>
+      <ul class="prose" style="padding-left:18px">${soleOwnerLinks}</ul>
+      <div class="flex gap-2 mt-4">
+        <a class="btn" href="/app/radera/organisation?org=${encodeURIComponent(input.summary.soleOwned[0]!.orgId)}">${icon("trash", 16)} ${t("Radera organisationen")}</a>
+        <a class="btn btn-ghost" href="/app/installningar">${t("Tillbaka")}</a>
+      </div>`
+    : `
+      ${alert(esc(t("Ditt konto och dess personuppgifter raderas permanent. Det går inte att ångra.")), "error")}
+      <dl class="kv" style="margin:16px 0">
+        <div><dt>${t("Organisationer")}</dt><dd>${sv(locale, input.summary.memberships.length)}</dd></div>
+        <div><dt>${t("Analyser skapade av dig")}</dt><dd>${sv(locale, input.summary.analyses)}</dd></div>
+        <div><dt>${t("Copilot-samtal")}</dt><dd>${sv(locale, input.summary.conversations)}</dd></div>
+        <div><dt>${t("Sparade vyer")}</dt><dd>${sv(locale, input.summary.savedViews)}</dd></div>
+      </dl>
+      <p>${t("Analyser du skapat i en organisation flyttas till en annan aktiv medlem. Organisationens data finns kvar.")}</p>
+      <form method="post" action="/app/radera/konto" class="mt-4" data-busy="${t("Raderar…")}">
+        <div class="form-row"><label for="bekrafta">${t("Skriv din e-postadress för att bekräfta")}</label>
+          <input id="bekrafta" name="bekrafta" type="email" required autocomplete="off" placeholder="${esc(input.user.email)}"></div>
+        <div class="form-row"><label for="losenord">${t("Bekräfta med ditt lösenord")}</label>
+          <input id="losenord" name="losenord" type="password" required autocomplete="current-password"></div>
+        <label class="check"><input type="checkbox" name="forstaatt" value="ja" required>
+          <span>${t("Jag förstår att kontot raderas permanent.")}</span></label>
+        <div class="flex gap-2 mt-4">
+          <button class="btn btn-danger" type="submit">${icon("trash", 16)} ${t("Radera kontot")}</button>
+          <a class="btn btn-ghost" href="${input.org ? "/app/installningar" : "/"}">${t("Avbryt")}</a>
+        </div>
+      </form>`;
+
+  if (input.org && input.role) {
+    return shell({
+      locale,
+      path: input.url.pathname + input.url.search,
+      title,
+      active: "settings",
+      user: input.user,
+      org: input.org,
+      role: input.role,
+      subtitle: t("Radering av ditt personliga konto."),
+      content: `
+      ${flash(input.url, locale)}
+      <div class="grid">${card({ span: 12, title, body })}</div>`,
+    });
+  }
+
+  return privacyStandalone(locale, title, `${flash(input.url, locale)}${body}`);
+}
+
+function privacyStandalone(locale: Locale, title: string, content: string): string {
+  const t = appTranslator(locale);
+  return `<!doctype html><html lang="${locale}" dir="${dirFor(locale)}" data-theme="light"><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)} · STOQWISE</title>
+  <meta name="color-scheme" content="light dark"><meta name="theme-color" content="#f6f4ef">
+  <link rel="stylesheet" href="/v3.css?v=143"><link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <script src="/v3.js?v=81" defer></script></head>
+  <body class="standalone"><main class="standalone-card" style="max-width:760px">
+    <a class="site-brand" href="/">${brandLockup()}</a>
+    <p class="eyebrow" style="margin-top:24px">STOQWISE</p>
+    <h1>${esc(title)}</h1>
+    ${content}
+    <form method="post" action="/logga-ut" class="mt-4"><button class="btn btn-ghost" type="submit">${t("Logga ut")}</button></form>
+  </main></body></html>`;
+}
+
+/* --------------------------------------------------------------- deletion */
+
+/** Confirmation before a permanent delete. It names the data set, counts what
+ * disappears and lists every surface that is recalculated, so nobody deletes a
+ * file by accident. */
+export function deletePage(input: PageContext & {
+  analysisId: string;
+  dataset: string;
+  kind: "analysis" | "items";
+  action: string;
+  items: Array<{ sku: string; name: string; value: number }>;
+  totalItems: number;
+  totalValue: number;
+  imports: number;
+  createdAt: string;
+  back: string;
+}): string {
+  const locale = input.locale;
+  const t = appTranslator(locale);
+  const wholeDataset = input.kind === "analysis";
+  const count = input.items.length;
+  const remaining = Math.max(0, input.totalItems - count);
+  const removedValue = input.items.reduce((sum, item) => sum + (Number.isFinite(item.value) ? item.value : 0), 0);
+  const list = input.items.length
+    ? table({
+        locale,
+        columns: [
+          { key: "sku", label: t("Artikel") },
+          { key: "name", label: t("Benämning") },
+          { key: "value", label: t("Lagervärde"), align: "right" },
+        ],
+        rows: input.items.slice(0, 50).map((item) => ({
+          sku: `<span class="mono">${esc(item.sku)}</span>`,
+          name: esc(item.name),
+          value: sek(locale, item.value),
+        })),
+      })
+    : "";
+
+  const summary = `<dl class="kv" style="margin:0 0 16px">
+    <div><dt>${t("Dataset")}</dt><dd>${esc(input.dataset)}</dd></div>
+    <div><dt>${wholeDataset ? t("Artiklar") : t("Artiklar kvar")}</dt><dd>${wholeDataset ? sv(locale, input.totalItems) : sv(locale, remaining)}</dd></div>
+    <div><dt>${wholeDataset ? t("Lagervärde") : t("Lagervärde som tas bort")}</dt><dd>${sek(locale, wholeDataset ? input.totalValue : removedValue)}</dd></div>
+    <div><dt>${t("Importhistorik")}</dt><dd>${sv(locale, input.imports)}</dd></div>
+  </dl>`;
+
+  const affected = `<ul class="prose" style="margin:0;padding-left:18px;font-size:13.5px">
+    <li>${t("Analys, nyckeltal, ABC/XYZ och åtgärdsförslag räknas om från kvarvarande artiklar.")}</li>
+    <li>${t("Prognoser, inköpsförslag och Lagervärld läser samma analys och ändras därför direkt.")}</li>
+    <li>${t("Rapporter och exporter som redan laddats ner påverkas inte.")}</li>
+    <li>${t("Raderingen kan inte ångras.")}</li>
+  </ul>`;
+
+  return shell({
+    locale,
+    path: input.url.pathname + input.url.search,
+    title: wholeDataset ? t("Radera dataset") : t("Radera artiklar"),
+    active: "imports",
+    user: input.user,
+    org: input.org,
+    role: input.role,
+    subtitle: wholeDataset
+      ? t("{n} artiklar i {file} tas bort permanent.", { n: sv(locale, input.totalItems), file: input.dataset })
+      : t("{n} av {total} artiklar tas bort permanent.", { n: sv(locale, count), total: sv(locale, input.totalItems) }),
+    content: `
+    <div class="grid">
+      <section class="card span-8">
+        <header class="card-head"><div><h2>${wholeDataset ? t("Hela datasetet tas bort") : t("Markerade artiklar tas bort")}</h2>
+          <p>${esc(input.dataset)} · ${date(locale, input.createdAt)}</p></div></header>
+        <div class="card-body">
+          ${alert(esc(t("Detta är en permanent radering. Kontrollera urvalet innan du fortsätter.")), "warn")}
+          ${summary}
+          ${list}
+          <form method="post" action="${esc(input.action)}" class="mt-4">
+            <input type="hidden" name="analys" value="${esc(input.analysisId)}">
+            ${input.items.map((item) => `<input type="hidden" name="sku" value="${esc(item.sku)}">`).join("")}
+            <div class="flex gap-2">
+              <button class="btn btn-danger" type="submit">${icon("trash", 16)} ${wholeDataset ? t("Radera datasetet") : t("Radera artiklarna")}</button>
+              <a class="btn btn-ghost" href="${esc(input.back)}">${t("Avbryt")}</a>
+            </div>
+          </form>
+        </div>
+      </section>
+      <section class="card span-4">
+        <header class="card-head"><div><h2>${t("Vad påverkas")}</h2></div></header>
+        <div class="card-body">${affected}</div>
+      </section>
     </div>`,
   });
 }
@@ -136,6 +465,8 @@ export function mappingPage(input: PageContext & {
   warnings: string[];
   fields: Array<{ key: string; label: string }>;
   rowCount: number;
+  defaults: { serviceLevel: number; deadStockDays: number };
+  industry: IndustryDetection;
 }): string {
   const locale = input.locale;
   const t = appTranslator(locale);
@@ -151,6 +482,35 @@ export function mappingPage(input: PageContext & {
     .join("")}</tr></thead><tbody>${input.sampleRows
     .map((row) => `<tr>${input.headers.map((_, i) => `<td class="mono">${esc(row[i] ?? "")}</td>`).join("")}</tr>`)
     .join("")}</tbody></table></div>`;
+
+  const label = (id: IndustryId): string => INDUSTRY_PROFILES[id].label[locale === "en" ? "en" : "sv"];
+  const suggestedIds = input.industry.suggestions.map((suggestion) => suggestion.id);
+  const otherIds = INDUSTRY_ORDER.filter((id) => !suggestedIds.includes(id));
+  const option = (id: IndustryId): string =>
+    `<option value="${id}" ${input.industry.selected === id ? "selected" : ""}>${esc(label(id))}</option>`;
+  const confidence = Math.round(input.industry.confidence * 100);
+  const industryCard = card({
+    span: 12,
+    title: t("Bransch"),
+    subtitle: t("Föreslagen utifrån filens struktur och innehåll. Bekräfta eller ändra innan analysen."),
+    body: `<div class="form-row" style="max-width:420px">
+        <label for="bransch">${t("Branschprofil")}</label>
+        <select id="bransch" name="bransch">
+          <optgroup label="${t("Föreslagna")}">${suggestedIds.map(option).join("")}</optgroup>
+          ${otherIds.length ? `<optgroup label="${t("Alla branscher")}">${otherIds.map(option).join("")}</optgroup>` : ""}
+        </select>
+      </div>
+      <div class="flex wrap center gap-2" style="margin-top:10px">
+        ${badge(input.industry.uncertain ? t("Osäker identifiering") : t("Konfidens {n} %", { n: confidence }), input.industry.uncertain ? "warn" : "ok")}
+        <span class="hint">${input.industry.uncertain
+          ? t("Underlaget räcker inte för en säker identifiering. Välj generell profil om du är osäker.")
+          : t("Du kan alltid välja en annan profil.")}</span>
+      </div>
+      <ul class="hint" style="margin:10px 0 0;padding-left:18px;max-width:70ch">${input.industry.evidence
+        .map((entry) => `<li>${esc(locale === "en" ? entry.en : entry.sv)}</li>`)
+        .join("")}</ul>
+      <p class="hint" style="max-width:70ch">${t("Branschen styr standardvärden och vilka attribut som lyfts fram. Importerade värden ändras aldrig av en felaktig identifiering.")}</p>`,
+  });
 
   const monthChoices = input.headers
     .map((h, i) => {
@@ -183,16 +543,17 @@ export function mappingPage(input: PageContext & {
             )
             .join("")}</div>`,
         })}
+        ${industryCard}
         ${card({
           span: 4,
           title: t("Inställningar"),
           body: `<div class="form-row"><label for="serviceniva">${t("Servicenivå")}</label>
               <select id="serviceniva" name="serviceniva">
-                ${[0.9, 0.95, 0.98, 0.99].map((s) => `<option value="${s}" ${s === 0.95 ? "selected" : ""}>${Math.round(s * 100)} %</option>`).join("")}
+                ${[0.9, 0.95, 0.98, 0.99].map((s) => `<option value="${s}" ${s === input.defaults.serviceLevel ? "selected" : ""}>${Math.round(s * 100)} %</option>`).join("")}
               </select></div>
             <div class="form-row"><label for="dodlager">${t("Fönster för inaktivt lager")}</label>
               <select id="dodlager" name="dodlager">
-                ${[90, 180, 365].map((d) => `<option value="${d}" ${d === 180 ? "selected" : ""}>${d} dagar</option>`).join("")}
+                ${[90, 180, 365].map((d) => `<option value="${d}" ${d === input.defaults.deadStockDays ? "selected" : ""}>${t("{n} dagar", { n: d })}</option>`).join("")}
               </select></div>
             <div class="form-row"><label for="lager2">${t("Lager")}</label>
               <input id="lager2" name="lager" type="text" value="Huvudlager" maxlength="60"></div>
@@ -246,6 +607,7 @@ export function integrationsPage(input: PageContext & {
 
   const keyTable = input.apiKeys.length
     ? table({
+    locale,
         columns: [
           { key: "name", label: t("Namn") },
           { key: "prefix", label: t("Prefix") },
@@ -256,15 +618,16 @@ export function integrationsPage(input: PageContext & {
         rows: input.apiKeys.map((k) => ({
           name: esc(k.name),
           prefix: `<span class="mono">${esc(k.prefix)}…</span>`,
-          scopes: badge(k.scopes === "write" ? "läs + skriv" : "läs", k.scopes === "write" ? "info" : "default"),
-          last: k.last_used_at ? date(locale, k.last_used_at) : "aldrig",
-          action: `<form method="post" action="/app/integrationer/nyckel/aterkalla"><input type="hidden" name="id" value="${k.id}"><button class="link-btn" type="submit">Återkalla</button></form>`,
+          scopes: badge(k.scopes === "write" ? t("Läs + skriv") : t("Läs"), k.scopes === "write" ? "info" : "default"),
+          last: k.last_used_at ? date(locale, k.last_used_at) : t("aldrig"),
+          action: `<form method="post" action="/app/integrationer/nyckel/aterkalla"><input type="hidden" name="id" value="${k.id}"><button class="link-btn" type="submit">${t("Återkalla")}</button></form>`,
         })),
       })
     : `<p class="muted">${t("Inga API-nycklar ännu.")}</p>`;
 
   const hookTable = input.webhooks.length
     ? table({
+    locale,
         columns: [
           { key: "url", label: t("Endpoint") },
           { key: "events", label: t("Händelser") },
@@ -278,10 +641,11 @@ export function integrationsPage(input: PageContext & {
           action: `<form method="post" action="/app/integrationer/webhook/radera" data-confirm="${esc(t("Ta bort webhooken?"))}"><input type="hidden" name="id" value="${w.id}"><button class="link-btn" type="submit">${t("Ta bort")}</button></form>`,
         })),
       })
-    : `<p class="muted">Inga webhooks registrerade.</p>`;
+    : `<p class="muted">${t("Inga webhooks registrerade.")}</p>`;
 
   const deliveries = input.deliveries.length
     ? table({
+    locale,
         columns: [
           { key: "event", label: t("Händelse") },
           { key: "url", label: t("Endpoint") },
@@ -329,7 +693,7 @@ export function integrationsPage(input: PageContext & {
       ${card({
         span: 6,
         title: t("Webhooks"),
-        subtitle: t("Signeras med HMAC-SHA256 i header X-Stoqwise-Signature."),
+        subtitle: t("Signeras med HMAC-SHA256 i header X-STOQWISE-Signature."),
         body:
           (apiAccess
             ? `<form class="filterbar" method="post" action="/app/integrationer/webhook" style="margin-bottom:14px">
@@ -393,9 +757,10 @@ export function teamPage(input: PageContext & {
     ${flash(input.url, locale)}
     <div class="grid">
       ${card({
-        span: 8,
+        span: 12,
         title: t("Medlemmar"),
-        body: table({
+        body: `<div class="team-members">${table({
+    locale,
           columns: [
             { key: "name", label: t("Namn") },
             { key: "email", label: t("E-post") },
@@ -404,10 +769,10 @@ export function teamPage(input: PageContext & {
             { key: "action", label: "" },
           ],
           rows,
-        }),
+        })}</div>`,
       })}
       ${card({
-        span: 4,
+        span: manage ? 5 : 12,
         title: t("Bjud in"),
         subtitle: t("Länken är engångs och giltig i sju dagar."),
         body: manage
@@ -417,20 +782,23 @@ export function teamPage(input: PageContext & {
                 <select id="invrole" name="roll"><option value="analyst">${t("Analytiker")}</option><option value="viewer">${t("Läsare")}</option><option value="admin">${t("Administratör")}</option></select></div>
               <button class="btn" type="submit" style="width:100%">${icon("plus", 15)} ${t("Skapa inbjudan")}</button>
             </form>
-            ${input.inviteLink ? alert(`Inbjudningslänk:<br><code style="font-size:12.5px">${esc(input.inviteLink)}</code>`, "ok") : ""}
-            <div class="rule"></div>
-            <h3>${t("Roller")}</h3>
-            <dl class="stat-line"><dt>${t("Ägare")}</dt><dd>${t("allt, inkl. fakturering")}</dd></dl>
-            <dl class="stat-line"><dt>${t("Administratör")}</dt><dd>${t("team, API, data")}</dd></dl>
-            <dl class="stat-line"><dt>${t("Analytiker")}</dt><dd>${t("import och analys")}</dd></dl>
-            <dl class="stat-line"><dt>${t("Läsare")}</dt><dd>${t("endast läsning")}</dd></dl>`
+            ${input.inviteLink ? alert(`Inbjudningslänk:<br><code style="font-size:12.5px">${esc(input.inviteLink)}</code>`, "ok") : ""}`
           : `<p class="muted">${t("Din roll kan inte bjuda in användare.")}</p>`,
       })}
+      ${manage ? card({
+        span: 7,
+        title: t("Roller"),
+        body: `<dl class="stat-line"><dt>${t("Ägare")}</dt><dd>${t("allt, inkl. fakturering")}</dd></dl>
+          <dl class="stat-line"><dt>${t("Administratör")}</dt><dd>${t("team, API, data")}</dd></dl>
+          <dl class="stat-line"><dt>${t("Analytiker")}</dt><dd>${t("import och analys")}</dd></dl>
+          <dl class="stat-line"><dt>${t("Läsare")}</dt><dd>${t("endast läsning")}</dd></dl>`,
+      }) : ""}
       ${card({
         span: 12,
         title: t("Inbjudningar"),
         body: input.invitations.length
           ? table({
+    locale,
               columns: [
                 { key: "email", label: t("E-post") },
                 { key: "role", label: t("Roll") },
@@ -444,7 +812,7 @@ export function teamPage(input: PageContext & {
                 status: i.accepted_at ? badge("Accepterad", "ok") : badge("Väntar", "warn"),
               })),
             })
-          : `<p class="muted">Inga inbjudningar skickade.</p>`,
+          : `<p class="muted">${t("Inga inbjudningar skickade.")}</p>`,
       })}
     </div>`,
   });
@@ -458,24 +826,48 @@ function roleLabel(role: Role, locale: Locale): string {
 
 export function billingPage(input: PageContext & {
   subscription: { plan: string; status: string; current_period_end: string | null } | null;
+  limits: OrgEntitlements;
   usage: { analyses: number; copilot: number; members: number; skus: number };
   stripeReady: boolean;
 }): string {
   const locale = input.locale;
   const t = appTranslator(locale);
-  const current = limitsFor(input.org.plan);
+  const current = input.limits;
+  const isTest = input.limits.isTest;
+  const trial = trialState(input.org);
+  const limitText = (value: number, testLabel: boolean): string => (testLabel && value >= 1_000_000 ? t("Obegränsat") : sv(locale, value));
+  const trialCard = trial.isTrial
+    ? card({
+        id: "provperiod",
+        span: 12,
+        title: t("Provperiod"),
+        body: `
+          <div class="kv compact">
+            <div><dt>${t("Status")}</dt><dd>${trial.ended ? badge(t("Läsbart läge"), "warn") : badge(t("Aktiv provperiod"), "ok")}</dd></div>
+            <div><dt>${t("Slutdatum")}</dt><dd>${trial.endsAt ? date(locale, trial.endsAt) : "–"}</dd></div>
+            <div><dt>${t("Dagar kvar")}</dt><dd>${sv(locale, trial.daysLeft)}</dd></div>
+          </div>
+          <p class="hint mt-4">${trial.ended ? t("Du kan läsa och exportera allt som finns kvar, men nya importer och analyser är blockerade.") : t("När provperioden tar slut går organisationen över till läsbart läge. Data raderas inte och kan läsas eller exporteras.")}</p>
+          <div class="flex gap-2 mt-4" style="flex-wrap:wrap">
+            <a class="btn" href="/app/prisestimat">${t("Begär offert")}</a>
+            <a class="btn btn-ghost" href="/app/export">${t("Exportera data")}</a>
+          </div>`,
+      })
+    : "";
   const packageCard = `<article class="commercial-callout">
-    <p class="eyebrow">${t("Intern konfiguration")}</p>
-    <h3>${esc(appText(locale, current.name))}</h3>
-    <p class="muted">${t("Pris och omfattning styrs av er affärsprofil och en personlig offert. Här ser ni den interna konfigurationen och användningen.")}</p>
+    <div>
+      <p class="eyebrow">${t("Intern konfiguration")}</p>
+      <h3>${esc(appText(locale, current.name))}</h3>
+      <p class="muted">${t("Pris och omfattning styrs av er affärsprofil och en personlig offert. Här ser ni den interna konfigurationen och användningen.")}</p>
+      <a class="btn" href="/app/prisestimat">${t("Visa personligt prisestimat")} ${icon("arrow", 15)}</a>
+      <p class="hint">${t("Ingen betalning aktiveras automatiskt. Offert och avtal krävs.")}</p>
+    </div>
     <div class="kv compact">
       <div><dt>${t("Artiklar")}</dt><dd>${sv(locale, current.maxSkus)}</dd></div>
       <div><dt>${t("Användare")}</dt><dd>${current.maxUsers}</dd></div>
       <div><dt>${t("Analyser/mån")}</dt><dd>${current.maxAnalysesPerMonth}</dd></div>
       <div><dt>${t("API")}</dt><dd>${current.apiAccess ? t("Ingår") : t("Inte ingår")}</dd></div>
     </div>
-    <a class="btn" href="/app/prisestimat">${t("Visa personligt prisestimat")} ${icon("arrow", 15)}</a>
-    <p class="hint">${t("Ingen betalning aktiveras automatiskt. Offert och avtal krävs.")}</p>
   </article>`;
 
   return shell({
@@ -491,12 +883,13 @@ export function billingPage(input: PageContext & {
     ${flash(input.url, locale)}
     ${!input.stripeReady ? alert(t("Betalningar är inte aktiverade i den här installationen. Offert, avtal och fakturering hanteras manuellt."), "warn") : ""}
     <div class="grid">
+      ${trialCard}
       ${card({
         span: 12,
         title: t("Användning den här månaden"),
         body: `<div class="kv">
-          <div><dt>${t("Analyser")}</dt><dd>${input.usage.analyses} / ${current.maxAnalysesPerMonth}</dd></div>
-          <div><dt>${t("Copilot-frågor")}</dt><dd>${input.usage.copilot} / ${sv(locale, current.copilotPerMonth)}</dd></div>
+          <div><dt>${t("Analyser")}</dt><dd>${input.usage.analyses} / ${limitText(current.maxAnalysesPerMonth, isTest)}</dd></div>
+          <div><dt>${t("Copilot-frågor")}</dt><dd>${input.usage.copilot} / ${limitText(current.copilotPerMonth, isTest)}</dd></div>
           <div><dt>${t("Användare")}</dt><dd>${input.usage.members} / ${current.maxUsers}</dd></div>
           <div><dt>${t("Artiklar i senaste analys")}</dt><dd>${sv(locale, input.usage.skus)} / ${sv(locale, current.maxSkus)}</dd></div>
         </div>`,
@@ -531,6 +924,7 @@ export function auditPage(input: PageContext & {
     content: card({
       title: t("Senaste händelser"),
       body: table({
+    locale,
         columns: [
           { key: "action", label: t("Händelse") },
           { key: "email", label: t("Användare") },
@@ -588,7 +982,7 @@ export function settingsPage(input: PageContext & {
               </select></div>
             <div class="form-row"><label for="dead">${t("Fönster för inaktivt lager")}</label>
               <select id="dead" name="dodlager" ${manage ? "" : "disabled"}>
-                ${[90, 180, 365].map((d) => `<option value="${d}" ${input.settings.deadStockDays === d ? "selected" : ""}>${d} dagar</option>`).join("")}
+                ${[90, 180, 365].map((d) => `<option value="${d}" ${input.settings.deadStockDays === d ? "selected" : ""}>${t("{n} dagar", { n: d })}</option>`).join("")}
               </select></div>
             <div class="form-row"><label for="rate">${t("Kalkylränta (%)")}</label>
               <input id="rate" name="ranta" type="number" min="0" max="30" step="0.5" value="${input.settings.capitalCostRate * 100}" ${manage ? "" : "disabled"}></div>
@@ -608,6 +1002,17 @@ export function settingsPage(input: PageContext & {
               <button class="btn btn-danger" type="submit">${t("Radera alla analyser")}</button></form>` : ""}
           </div>
           <p class="hint mt-4">${t("Rådata sparas aldrig som fil. Radering tar bort tolkade rader, resultat och artikelrader.")}</p>`,
+      })}
+      ${card({
+        span: 12,
+        title: t("Data och integritet"),
+        subtitle: t("Exportera hela organisationen eller radera den permanent."),
+        body: `<div class="flex gap-2" style="flex-wrap:wrap">
+          <a class="btn btn-ghost" href="/app/export">${icon("download", 15)} ${t("Exportera all data (JSON)")}</a>
+          ${input.role === "owner" ? `<a class="btn btn-ghost is-danger" href="/app/radera/organisation">${icon("trash", 15)} ${t("Radera hela organisationen")}</a>` : ""}
+          <a class="btn btn-ghost is-danger" href="/app/radera/konto">${icon("trash", 15)} ${t("Radera mitt konto")}</a>
+        </div>
+        <p class="hint mt-4">${t("Exporten innehåller fullständiga analysresultat, narrativ, indata och alla artikelrader. Radering av organisationen kräver ägarroll, organisationens namn och ditt lösenord. Radering av kontot kräver din e-postadress och ditt lösenord.")}</p>`,
       })}
     </div>`,
   });

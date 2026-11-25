@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { can, limitsFor, planLimits, roleRank, type Permission, type Role } from "../src/data/repo.ts";
+import { can, canDeleteOrgData, limitsFor, planLimits, roleRank, type Permission, type Role } from "../src/data/repo.ts";
 
 const roles: Role[] = ["owner", "admin", "analyst", "viewer"];
 const permissions: Permission[] = [
@@ -61,6 +61,16 @@ describe("planbegränsningar", () => {
 
   test("okänd plan faller tillbaka på trial", () => {
     expect(limitsFor("finns-inte").id).toBe("trial");
+  });
+
+  test("radering kräver både roll och plan", () => {
+    expect(canDeleteOrgData("owner", { deleteData: true })).toBe(true);
+    expect(canDeleteOrgData("admin", { deleteData: true })).toBe(true);
+    expect(canDeleteOrgData("analyst", { deleteData: true })).toBe(false);
+    expect(canDeleteOrgData("viewer", { deleteData: true })).toBe(false);
+    // A plan can withdraw the capability without changing roles.
+    expect(canDeleteOrgData("owner", { deleteData: false })).toBe(false);
+    for (const plan of Object.values(planLimits)) expect(plan.deleteData).toBe(true);
   });
 
   test("endast betalplaner har API i praktiken", () => {

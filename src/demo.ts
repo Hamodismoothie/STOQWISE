@@ -11,11 +11,15 @@
  * monthly sales history); analysis.ts calculates everything else.
  */
 import type { ItemInput } from "./dataset.ts";
+import { demoCompanyEn, demoNameEn, demoStorageEn, demoUnitEn } from "./demo-en.ts";
+import type { IndustryId } from "./industry.ts";
 
-export type DemoEnvironmentId = "industri" | "hem" | "foodservice" | "ecommerce";
+export type DemoEnvironmentId = "industri" | "hem" | "livsmedel" | "foodservice" | "ecommerce";
 
 export interface DemoEnvironmentMeta {
   id: DemoEnvironmentId;
+  /** Profile this demo environment demonstrates. */
+  industryId: IndustryId;
   company: string;
   orgNumber: string;
   industry: string;
@@ -73,6 +77,7 @@ interface DemoProduct {
 const ENVIRONMENTS: Record<DemoEnvironmentId, DemoEnvironmentMeta> = {
   industri: {
     id: "industri",
+    industryId: "industri",
     company: "Nordvind Industriförsörjning AB",
     orgNumber: "559214-6031",
     industry: "Industri- och byggvarugrossist",
@@ -91,6 +96,7 @@ const ENVIRONMENTS: Record<DemoEnvironmentId, DemoEnvironmentMeta> = {
   },
   hem: {
     id: "hem",
+    industryId: "ecommerce",
     company: "Ljusgården Hem & Trädgård AB",
     orgNumber: "556903-1184",
     industry: "Hem- och trädgårdsvaruhandel",
@@ -107,8 +113,28 @@ const ENVIRONMENTS: Record<DemoEnvironmentId, DemoEnvironmentMeta> = {
     months: 24,
     accent: "Handel",
   },
+  livsmedel: {
+    id: "livsmedel",
+    industryId: "livsmedel",
+    company: "Grönvik Livsmedel AB",
+    orgNumber: "559442-1180",
+    industry: "Livsmedelsgrossist med kylda, frysta och torra varor",
+    title: "Dagligvarugrossist med kylkedja från gård till butik",
+    description:
+      "Distribuerar dagligvaror till butiker och restauranger i Mälardalen. Kylda, frysta och torra varor hanteras i separata temperaturzoner. Korta ledtider på färskvaror, batchspårning och FEFO-rotation styr påfyllningen.",
+    audience: "butiker, restauranger och dagligvarukedjor",
+    industryEn: "Food and grocery wholesale",
+    titleEn: "Grocery wholesaler with a cold chain from farm to store",
+    descriptionEn:
+      "Distributes groceries to stores and restaurants in the Mälaren region. Chilled, frozen and dry goods are handled in separate temperature zones. Short lead times on fresh goods, batch tracking and FEFO rotation drive replenishment.",
+    audienceEn: "stores, restaurants and grocery chains",
+    accentEn: "Food",
+    months: 12,
+    accent: "Livsmedel",
+  },
   foodservice: {
     id: "foodservice",
+    industryId: "foodservice",
     company: "Solsidan Foodservice AB",
     orgNumber: "559087-4420",
     industry: "Livsmedelsdistribution till restaurang och storkök",
@@ -127,6 +153,7 @@ const ENVIRONMENTS: Record<DemoEnvironmentId, DemoEnvironmentMeta> = {
   },
   ecommerce: {
     id: "ecommerce",
+    industryId: "ecommerce",
     company: "Nordbris Lifestyle AB",
     orgNumber: "559331-2078",
     industry: "E-handel inom livsstil och kläder",
@@ -239,6 +266,51 @@ UT-20804|Utomhusförlängningskabel 10 m IP44|Utemöbler|El|Hemma & Trädgård N
 UT-20805|Vakuumflaska 500 ml|Utemöbler|Dryck|Hemma & Trädgård Norden AB|84|159|112|winter|2.4|28|12|Grönskande|st
 ZZ-20901|Gammal trädgårdsfontän 60 cm|Utgående|Trädgård|Grönskande Trädgård AB|642|999|1|inactive|60|35|1|Grönskande|st
 `,
+  livsmedel: `
+LM-60001|Mellanmjölk 1,5 L, 12-pack|Mejeri|Mjölk|Mejeri Dalby AB|168|219|210|steady|0.6|3|6|Dalby|pack
+LM-60002|Gräddfil 3 dl, 12-pack|Mejeri|Gräddfil|Mejeri Dalby AB|96|139|140|steady|0.7|3|6|Dalby|pack
+LM-60003|Vispgrädde 5 dl, 12-pack|Mejeri|Grädde|Mejeri Dalby AB|148|199|120|winter|0.8|3|6|Dalby|pack
+LM-60004|Naturell yoghurt 1 kg, 6-pack|Mejeri|Yoghurt|Mejeri Dalby AB|118|169|110|steady|1.0|3|4|Dalby|pack
+LM-60005|Hushållsost 1 kg|Mejeri|Ost|Mejeri Dalby AB|98|149|96|steady|2.0|7|4|Dalby|st
+LM-60006|Smör 500 g, 10-pack|Mejeri|Smör|Mejeri Dalby AB|420|549|58|winter|1.2|5|2|Dalby|pack
+LM-60007|Ägg 12-pack, 8-pack|Mejeri|Ägg|Solsidan Livsmedel AB|210|289|84|winter|0.9|4|4|Solsidan|pack
+LM-60101|Kycklingfilé 1 kg, 5-pack|Kött och chark|Kyckling|Nordhav Frys AB|340|449|72|steady|0.8|4|4|Nordhav|pack
+LM-60102|Nötfärs 1 kg, 5-pack|Kött och chark|Nötkött|Nordhav Frys AB|420|549|64|summer|0.7|4|4|Nordhav|pack
+LM-60103|Fläskfilé 1 kg, 4-pack|Kött och chark|Fläsk|Nordhav Frys AB|360|479|38|q4|1.0|5|4|Nordhav|pack
+LM-60104|Kalkonbröst 500 g|Kött och chark|Kalkon|Nordhav Frys AB|96|139|52|steady|1.4|5|6|Nordhav|st
+LM-60105|Charkbricka 200 g|Kött och chark|Chark|Solsidan Livsmedel AB|48|79|120|q4|1.8|7|12|Solsidan|st
+LM-60201|Banan 18 kg|Frukt och grönt|Frukt|Grönfrakt Import AB|280|359|140|steady|0.4|4|2|Grönfrakt|låda
+LM-60202|Tomat 5 kg|Frukt och grönt|Grönsaker|Grönfrakt Import AB|120|169|96|summer|0.5|3|4|Grönfrakt|låda
+LM-60203|Gurka 5 kg|Frukt och grönt|Grönsaker|Grönfrakt Import AB|96|139|88|summer|0.6|3|4|Grönfrakt|låda
+LM-60204|Potatis 10 kg|Frukt och grönt|Rotfrukter|Grönfrakt Import AB|78|109|110|steady|1.2|5|4|Grönfrakt|säck
+LM-60205|Morot 5 kg|Frukt och grönt|Rotfrukter|Grönfrakt Import AB|52|79|92|steady|1.0|5|6|Grönfrakt|låda
+LM-60206|Salladsmix 1 kg|Frukt och grönt|Sallad|Grönfrakt Import AB|78|119|64|summer|0.3|3|6|Grönfrakt|låda
+LM-60301|Frysta ärtor 2,5 kg|Fryst|Grönsaker|Nordhav Frys AB|58|89|84|steady|1.0|14|6|Nordhav|påse
+LM-60302|Pommes frites 2,5 kg|Fryst|Potatis|Nordhav Frys AB|62|99|156|summer|0.8|14|8|Nordhav|påse
+LM-60303|Fryst laxfilé 1 kg|Fryst|Fisk|Nordhav Frys AB|148|219|74|steady|0.9|14|6|Nordhav|påse
+LM-60304|Vaniljglass 2 L|Fryst|Glass|Mejeri Dalby AB|68|109|118|summer|0.5|10|6|Dalby|st
+LM-60305|Frysta bär 1 kg|Fryst|Bär|Nordhav Frys AB|72|119|56|volatile|8.0|14|8|Nordhav|påse
+LM-60401|Vetemjöl 2 kg, 10-pack|Torrvaror|Bageri|Solsidan Livsmedel AB|138|189|72|winter|1.8|14|4|Solsidan|pack
+LM-60402|Strösocker 2 kg, 10-pack|Torrvaror|Bageri|Solsidan Livsmedel AB|128|179|64|winter|2.0|14|4|Solsidan|pack
+LM-60403|Basmatiris 5 kg|Torrvaror|Ris|Solsidan Livsmedel AB|112|169|68|steady|2.2|21|4|Solsidan|säck
+LM-60404|Spaghetti 1 kg, 10-pack|Torrvaror|Pasta|Solsidan Livsmedel AB|138|199|82|steady|1.6|21|4|Solsidan|pack
+LM-60405|Krossade tomater 400 g, 24-pack|Torrvaror|Konserver|Solsidan Livsmedel AB|168|239|96|winter|2.4|21|3|Solsidan|pack
+LM-60406|Kaffe 500 g, 6-pack|Torrvaror|Kaffe|Kafferosteriet Almnäs AB|246|329|86|steady|1.4|21|4|Almnäs|pack
+LM-60407|Havregryn 1 kg, 8-pack|Torrvaror|Flingor|Solsidan Livsmedel AB|96|139|74|steady|7.0|14|4|Solsidan|pack
+LM-60501|Apelsinjuice 1 L, 8-pack|Dryck|Juice|Solsidan Livsmedel AB|96|149|124|winter|0.8|7|6|Solsidan|pack
+LM-60502|Kolsyrat vatten 33 cl, 24-pack|Dryck|Vatten|Solsidan Livsmedel AB|78|129|164|summer|0.5|10|6|Solsidan|pack
+LM-60503|Äppelmust 1 L, 6-pack|Dryck|Must|Solsidan Livsmedel AB|108|169|68|q4|0.15|10|6|Solsidan|pack
+LM-60504|Havredryck 1 L, 6-pack|Dryck|Dryck|Mejeri Dalby AB|78|119|132|growth|0.6|10|6|Dalby|pack
+LM-60601|Formbröd 800 g, 6-pack|Bageri|Bröd|Bageri Kvarnen AB|84|129|156|steady|0.3|2|6|Kvarnen|pack
+LM-60602|Surdegsbröd 600 g, 8-pack|Bageri|Bröd|Bageri Kvarnen AB|128|189|92|steady|0.4|2|4|Kvarnen|pack
+LM-60603|Kanelbullar 12-pack|Bageri|Bageri|Bageri Kvarnen AB|68|109|74|q4|8.0|2|6|Kvarnen|pack
+LM-60701|Lasagne 400 g, 6-pack|Färdigmat|Färdigmat|Solsidan Livsmedel AB|138|199|88|steady|0.7|7|6|Solsidan|pack
+LM-60702|Kycklinggryta 400 g, 6-pack|Färdigmat|Färdigmat|Solsidan Livsmedel AB|142|209|76|steady|0.8|7|6|Solsidan|pack
+LM-60703|Vegetarisk lasagne 400 g, 6-pack|Färdigmat|Färdigmat|Solsidan Livsmedel AB|132|199|64|growth|0.9|7|6|Solsidan|pack
+LM-60704|Pizza margherita 350 g, 8-pack|Färdigmat|Pizza|Solsidan Livsmedel AB|156|229|104|q4|0.6|10|6|Solsidan|pack
+LM-60801|Julmust 1,5 L, 6-pack|Dryck|Säsong|Solsidan Livsmedel AB|96|149|18|inactive|8.0|10|6|Solsidan|pack
+LM-60802|Säsongssallad 1 kg|Frukt och grönt|Sallad|Grönfrakt Import AB|68|109|12|dead|4.0|3|6|Grönfrakt|låda
+`,
   foodservice: `
 FD-40001|Arabica kaffebönor 1 kg|Torrvaror|Kaffe|Kafferosteriet Almnäs AB|148|219|360|steady|0.4|14|12|Almnäs|påse
 FD-40002|Tomatpassata 500 g, 12-pack|Torrvaror|Konserver|Solsidan Livsmedel AB|168|249|82|summer|8.5|18|6|Solsidan|pack
@@ -319,30 +391,39 @@ ZZ-50601|Utgången vintermössa 2024|Utgående|Accessoarer|Atelier Nord AB|68|14
 `,
 };
 
-function foodStorage(category: string, subcategory: string): { days: number; storage: string } {
+function foodStorage(category: string, subcategory: string, locale: "sv" | "en"): { days: number; storage: string } {
+  const value = (days: number, storage: string) => ({ days, storage: locale === "en" ? demoStorageEn(storage) : storage });
   switch (category) {
     case "Torrvaror":
-      return { days: 365, storage: "Torrt, 15–25 °C" };
+      return value(365, "Torrt, 15–25 °C");
+    case "Kött och chark":
+      return value(14, "Kyld 2–4 °C");
+    case "Frukt och grönt":
+      return value(10, "Kyld 2–8 °C");
+    case "Bageri":
+      return value(5, "Torrt eller kyld 2–8 °C");
+    case "Färdigmat":
+      return value(21, "Kyld 2–4 °C");
     case "Dryck":
       return subcategory === "Utrustning"
-        ? { days: 3650, storage: "Torrt, rumstemperatur" }
-        : { days: 180, storage: "Torrt eller kyld 2–8 °C" };
+        ? value(3650, "Torrt, rumstemperatur")
+        : value(180, "Torrt eller kyld 2–8 °C");
     case "Fryst":
-      return { days: 365, storage: "Fryst, -18 °C eller kallare" };
+      return value(365, "Fryst, -18 °C eller kallare");
     case "Mejeri":
       return subcategory === "Smör"
-        ? { days: 90, storage: "Kyld 2–8 °C" }
+        ? value(90, "Kyld 2–8 °C")
         : subcategory === "Ost"
-          ? { days: 120, storage: "Kyld 2–8 °C" }
-          : { days: 21, storage: "Kyld 2–4 °C" };
+          ? value(120, "Kyld 2–8 °C")
+          : value(21, "Kyld 2–4 °C");
     case "Förpackning":
     case "Engångsmaterial":
     case "Rengöring":
-      return { days: 730, storage: "Torrt, rumstemperatur" };
+      return value(730, "Torrt, rumstemperatur");
     case "Restaurangutrustning":
-      return { days: 1825, storage: "Torrt, rumstemperatur" };
+      return value(1825, "Torrt, rumstemperatur");
     default:
-      return { days: 365, storage: "Torrt, rumstemperatur" };
+      return value(365, "Torrt, rumstemperatur");
   }
 }
 
@@ -438,7 +519,7 @@ function monthlyHistory(product: DemoProduct, months: number, seed: number): num
   return history;
 }
 
-function buildEnvironment(id: DemoEnvironmentId): DemoDataset {
+function buildEnvironment(id: DemoEnvironmentId, locale: "sv" | "en"): DemoDataset {
   const meta = ENVIRONMENTS[id];
   const products = parseProducts(RAW[id]);
   const items: ItemInput[] = products.map((product, index) => {
@@ -457,14 +538,14 @@ function buildEnvironment(id: DemoEnvironmentId): DemoDataset {
     // every environment, so available stock differs from the warehouse balance.
     const reserved = index % 3 === 0 ? Math.min(stock, Math.round(stock * (0.04 + (index % 5) * 0.02))) : 0;
     const totalSold = monthly.reduce((sum, value) => sum + value, 0);
-    const perishable = id === "foodservice" ? foodStorage(product.category, product.subcategory) : null;
+    const perishable = id === "foodservice" || id === "livsmedel" ? foodStorage(product.category, product.subcategory, locale) : null;
     return {
       sku: product.sku,
-      name: product.name,
+      name: locale === "en" ? demoNameEn(product.name) : product.name,
       category: product.category,
       subcategory: product.subcategory,
       brand: product.brand,
-      unit: product.unit,
+      unit: locale === "en" ? demoUnitEn(product.unit) : product.unit,
       shelfLifeDays: perishable?.days ?? null,
       storage: perishable?.storage ?? null,
       supplier: product.supplier,
@@ -473,6 +554,10 @@ function buildEnvironment(id: DemoEnvironmentId): DemoDataset {
       cost: product.cost,
       price: product.price,
       leadTimeDays: product.leadTimeDays,
+      // Supplier lead times vary in reality. 16–25 % of the nominal lead time,
+      // stable per article, lets SERV1 combine demand and lead-time variation
+      // instead of pretending every delivery arrives on the same day.
+      leadTimeSigmaDays: Math.max(1, Math.round(product.leadTimeDays * (0.16 + (index % 4) * 0.03))),
       moq: product.moq,
       monthly,
       totalSold,
@@ -482,7 +567,7 @@ function buildEnvironment(id: DemoEnvironmentId): DemoDataset {
 
   return {
     environment: meta,
-    company: meta.company,
+    company: locale === "en" ? demoCompanyEn(meta.company) : meta.company,
     orgNumber: meta.orgNumber,
     months: meta.months,
     items,
@@ -494,15 +579,15 @@ export const DEMO_ENVIRONMENTS: DemoEnvironmentMeta[] = Object.values(ENVIRONMEN
 export const DEFAULT_DEMO_ENVIRONMENT: DemoEnvironmentId = "industri";
 
 export function isDemoEnvironment(value: string | null | undefined): value is DemoEnvironmentId {
-  return value === "industri" || value === "hem" || value === "foodservice" || value === "ecommerce";
+  return value === "industri" || value === "hem" || value === "livsmedel" || value === "foodservice" || value === "ecommerce";
 }
 
 export function getDemoEnvironmentMeta(id: DemoEnvironmentId): DemoEnvironmentMeta {
   return ENVIRONMENTS[id];
 }
 
-export function buildDemoDataset(id: DemoEnvironmentId = DEFAULT_DEMO_ENVIRONMENT): DemoDataset {
-  return buildEnvironment(id);
+export function buildDemoDataset(id: DemoEnvironmentId = DEFAULT_DEMO_ENVIRONMENT, locale: "sv" | "en" = "sv"): DemoDataset {
+  return buildEnvironment(id, locale);
 }
 
 /** Renders the environment as a CSV that looks like a real ERP/POS export. */

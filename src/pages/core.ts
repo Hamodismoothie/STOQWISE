@@ -13,6 +13,8 @@ import type { IntelligenceSnapshot } from "../core/intelligence.ts";
 import { compareScenarios, type ScenarioOutcome, type ScenarioInput } from "../core/simulate.ts";
 import type { ForecastResult, SupplyPlan } from "../core/forecast.ts";
 import type { Role } from "../data/repo.ts";
+import { CLASS_CUTOFFS, DISPLAY, OTHER_CATEGORY_LABEL } from "../tuning.ts";
+import { trialState } from "../trial-state.ts";
 import { localizeCategory, planSearch } from "../terminology.ts";
 import {
   abcXyzMatrix,
@@ -49,7 +51,7 @@ import type { Locale } from "../i18n.ts";
 export interface PageContext {
   locale: Locale;
   user: { id: string; name: string; email: string };
-  org: { name: string; plan: string };
+  org: { name: string; plan: string; trial_ends_at?: string | null };
   role: Role;
   url: URL;
 }
@@ -75,11 +77,61 @@ const confidenceLabel = (locale: Locale, c: string): string => appConfidence(loc
 
 /* ------------------------------------------------------------- dashboard */
 
+/** First screen after sign-up. A trial without an analysis should explain the
+ * next three steps, not show an empty dashboard. An ended trial must not offer
+ * an upload that the write guard will reject. */
+export function dashboardEmptyState(input: {
+  locale: Locale;
+  org: { plan: string; trial_ends_at?: string | null };
+}): string {
+  const locale = input.locale;
+  const t = appTranslator(locale);
+  const trial = trialState(input.org);
+
+  if (trial.ended) {
+    return `<div class="card"><div class="card-body">
+      <div class="empty"><div class="empty-mark">${icon("radar", 26)}</div>
+        <p class="eyebrow">${t("Provperioden har tagit slut")}</p>
+        <h3>${t("Ingen analys ännu")}</h3>
+        <p>${t("Organisationen är i läsbart läge. Det finns ingen analys att visa, men alla data som redan finns kan exporteras. Begär en offert för att aktivera en betald plan och öppna skrivåtkomsten igen.")}</p>
+        <div class="flex gap-2 mt-4" style="flex-wrap:wrap;justify-content:center">
+          <a class="btn" href="/app/prisestimat">${t("Begär offert")}</a>
+          <a class="btn btn-ghost" href="/app/export">${t("Exportera data")}</a>
+          <a class="btn btn-ghost" href="/app/abonnemang#provperiod">${t("Läs mer")}</a>
+        </div>
+      </div></div></div>`;
+  }
+
+  if (trial.isTrial) {
+    return `<div class="card"><div class="card-body">
+      <div class="empty"><div class="empty-mark">${icon("upload", 26)}</div>
+        <h3>${t("Ingen analys ännu")}</h3>
+        <p><strong>${t("Kom igång med din första analys")}.</strong> ${t("Ladda upp en CSV- eller Excel-export. Analysen visar var kapitalet sitter, vad som riskerar att ta slut och vilka åtgärder som ger störst effekt.")}</p>
+        <ol class="prose" style="max-width:560px;margin:18px auto 0;padding-left:20px;text-align:left;font-size:13.5px">
+          <li>${t("Ladda upp en export från ert affärs- eller lagersystem.")}</li>
+          <li>${t("Kontrollera kolumnmappningen. Vanliga kolumner känns igen automatiskt.")}</li>
+          <li>${t("Läs analysen och ladda ner rapporten eller beställningsunderlaget.")}</li>
+        </ol>
+        <div class="flex gap-2 mt-4" style="flex-wrap:wrap;justify-content:center">
+          <a class="btn" href="/app/importera">${t("Ladda upp fil")}</a>
+          <a class="btn btn-ghost" href="/app/sandbox">${t("Öppna sandbox")}</a>
+          <a class="btn btn-ghost" href="/app/abonnemang#provperiod">${t("Läs mer")}</a>
+        </div>
+      </div></div></div>`;
+  }
+
+  return `<div class="card"><div class="card-body">
+    <div class="empty"><div class="empty-mark">${icon("upload", 26)}</div><h3>${t("Ingen analys ännu")}</h3>
+    <p>${t("Ladda upp en CSV- eller Excel-export för att komma igång. Vill du se gränssnittet först, öppna sandboxen med syntetisk data.")}</p>
+    <a class="btn mt-4" href="/app/importera">${t("Ladda upp fil")}</a>
+    <a class="btn btn-ghost mt-4" href="/app/sandbox">${t("Öppna sandbox")}</a></div></div></div>`;
+}
+
 export function dashboardPage(input: PageContext & {
   result: AnalysisResult;
   intel: IntelligenceSnapshot;
   analysisId: string;
-  analyses: Array<{ id: string; filename: string; created_at: string; rows: number }>;
+  analyses: Array<{ id: string; filename: string; created_at: string; rows: number; source?: string | null }>;
   snapshots: Array<{ date: string; value: number }>;
 }): string {
   const locale = input.locale;
@@ -88,13 +140,18 @@ export function dashboardPage(input: PageContext & {
   const { result, intel } = input;
   const k = result.kpis;
   const analysisOptions = input.analyses
-    .map((a) => `<option value="${a.id}" title="${esc(a.filename)} · ${date(locale, a.created_at)}" ${a.id === input.analysisId ? "selected" : ""}>${esc(a.filename)}</option>`)
+    .map((a) => {
+      // Identical filenames are common (one export per month). The timestamp,
+      // article count and analysis id make every option distinguishable.
+      const label = `${a.filename} · ${dateTime(locale, a.created_at)} · ${sv(locale, a.rows)} art. · #${a.id.slice(0, 8)}`;
+      return `<option value="${a.id}" title="${esc(a.filename)} · ${dateTime(locale, a.created_at)} · ${esc(a.id)}" ${a.id === input.analysisId ? "selected" : ""}>${esc(label)}</option>`;
+    })
     .join("");
 
   const toolbar = `<form class="filterbar" method="get" action="/app" data-persist="dashboard">
     <div class="form-row grow"><label for="a">${t("Analys")}</label>
       <select id="a" name="analys" data-autosubmit>${analysisOptions}</select></div>
-    <div class="form-row"><label for="w">${t("Fönster (inaktivt lager)")}</label>
+    <div class="form-row"><label for="w">${t("Inaktivitetsfönster")}</label>
       <select id="w" name="fonster" data-autosubmit>
         <option value="90" ${result.settings.deadStockDays === 90 ? "selected" : ""}>${t("90 dagar")}</option>
         <option value="180" ${result.settings.deadStockDays === 180 ? "selected" : ""}>${t("180 dagar")}</option>
@@ -123,16 +180,67 @@ export function dashboardPage(input: PageContext & {
       (d) => `<div class="driver">
         <span class="driver-label">${esc(appDynamic(locale, d.label))}</span>
         <span class="driver-track"><span class="driver-fill" style="width:${Math.round(d.score * 100)}%;background:${d.score > 0.66 ? "var(--success)" : d.score > 0.33 ? "var(--warning)" : "var(--critical)"}"></span></span>
-        <span class="driver-score">${Math.round(d.score * 100)}</span>
+        <span class="driver-score" title="${t("Bidrag till lagerhälsan")}: +${num(locale, d.contribution, 1)} / ${Math.round(d.weight * 100)}">${Math.round(d.score * 100)}<small>+${num(locale, d.contribution, 1)}</small></span>
       </div>`,
     )
     .join("");
+
+  // "Frigjort kapital" is a blend of two rates. Report the rate that the data
+  // actually produced instead of a fixed "25–55 %" label.
+  const releaseSub = (() => {
+    const rate = `${pct(locale, k.releaseRateLow, 0)}–${pct(locale, k.releaseRateHigh, 0)}`;
+    if (k.deadStockValue > 0 && k.overstockValue > 0) return t("{rate} realisationsgrad · inaktiva och överlager", { rate });
+    if (k.deadStockValue > 0) return t("{rate} realisationsgrad · inaktiva artiklar", { rate });
+    if (k.overstockValue > 0) return t("{rate} realisationsgrad · överlager", { rate });
+    return t("Inget kapital att frigöra");
+  })();
+
+  const coverage = result.xyzCoverage ?? {
+    minMonths: 6,
+    classified: k.skuCount - intel.classification.unclassified,
+    noHistory: intel.classification.reasons.noHistory,
+    insufficientHistory: intel.classification.reasons.insufficientHistory,
+    zeroDemand: intel.classification.reasons.zeroDemand,
+    missingValues: intel.classification.reasons.missingValues,
+  };
+  const abcUnclassified = intel.classification.unclassified;
+  const xyzReasons = [
+    coverage.zeroDemand > 0 ? t("{n} har noll efterfrågan", { n: sv(locale, coverage.zeroDemand) }) : "",
+    coverage.insufficientHistory > 0
+      ? t("{n} har kortare historik än {months} månader", { n: sv(locale, coverage.insufficientHistory), months: sv(locale, coverage.minMonths) })
+      : "",
+    coverage.noHistory > 0 ? t("{n} saknar månadshistorik", { n: sv(locale, coverage.noHistory) }) : "",
+    coverage.missingValues > 0 ? t("{n} har saknade värden i historiken", { n: sv(locale, coverage.missingValues) }) : "",
+  ].filter(Boolean);
+  const abcFootnote =
+    abcUnclassified > 0
+      ? t("{n} av {total} artiklar kan inte XYZ-klassificeras tillförlitligt: {reasons}. Variationskoefficienten beräknas inte när medelefterfrågan är 0 eller underlaget är otillräckligt.", {
+          n: sv(locale, abcUnclassified),
+          total: sv(locale, k.skuCount),
+          reasons: xyzReasons.join(" · "),
+        })
+      : t("Alla artiklar har en XYZ-klass.");
+
+  // Profit bars: top five plus one explicit remainder, so the bars add up to
+  // the gross profit shown next to them.
+  const profitBars = (() => {
+    const rows = intel.profitability.byCategory;
+    const label = (row: { category: string }) =>
+      row.category === OTHER_CATEGORY_LABEL ? t("Övriga kategorier") : localizeCategory(row.category, locale);
+    if (rows.length <= DISPLAY.profitBars) return rows.map((row) => ({ label: label(row), value: row.profit }));
+    const head = rows.slice(0, DISPLAY.profitBars - 1);
+    const rest = rows.slice(DISPLAY.profitBars - 1);
+    return [
+      ...head.map((row) => ({ label: label(row), value: row.profit })),
+      { label: t("Övriga kategorier"), value: rest.reduce((a, row) => a + row.profit, 0) },
+    ];
+  })();
 
   const priorities = intel.priorities.slice(0, 8);
   const priorityList = priorities.length
     ? `<div class="priority-list">${priorities
         .map(
-          (p, i) => `<a class="priority-item" href="/app/artiklar/${encodeURIComponent(p.sku)}?analys=${input.analysisId}">
+          (p, i) => `<a class="priority-item" data-sku="${esc(p.sku)}" href="/app/artiklar/${encodeURIComponent(p.sku)}?analys=${input.analysisId}">
         <span class="priority-rank">${String(i + 1).padStart(2, "0")}</span>
         <span><span class="priority-title">${esc(p.name)}</span>
           <p class="priority-why">${esc(p.reasons.length ? p.reasons.map((r) => appDynamic(locale, r)).join(" · ") : t("Prioriterad av kapitalvikt"))}</p></span>
@@ -146,14 +254,30 @@ export function dashboardPage(input: PageContext & {
   const anomalyList = anomalies.length
     ? anomalies
         .map(
-          (a) => `<div class="stat-line"><dt><strong>${esc(a.name)}</strong><br><span class="muted">${esc(appDynamic(locale, a.detail))}</span></dt>
-      <dd>${badge(a.kind === "never_sold" ? t("Aldrig såld") : a.kind === "stock_spike" ? t("Överlager") : a.kind === "spike" ? t("Topp") : t("Fall"), a.kind === "never_sold" ? "danger" : "warn")}</dd></div>`,
+          (a) => `<dl class="stat-line"><dt><strong>${esc(a.name)}</strong><br><span class="muted">${esc(appDynamic(locale, a.detail))}</span></dt>
+      <dd>${badge(a.kind === "never_sold" ? t("Aldrig såld") : a.kind === "stock_spike" ? t("Överlager") : a.kind === "spike" ? t("Topp") : t("Fall"), a.kind === "never_sold" ? "danger" : "warn")}</dd></dl>`,
         )
         .join("")
-    : `<p class="muted">${t("Inga statistiskt avvikande rörelser i historiken.")}</p>`;
+    : `<p class="muted">${t("Inga avvikande rörelser i historiken.")}</p>`;
+
+  const warnings = result.dataQuality.warnings ?? [];
+  const warningLimit = 6;
+  const importWarnings = warnings.length
+    ? card({
+        span: 12,
+        title: t("Importvarningar"),
+        subtitle: t("Filen importerades, men dessa rader eller värden behövde justeras."),
+        body: `${warnings.slice(0, warningLimit).map((warning) => alert(esc(warning), "warn")).join("")}${
+          warnings.length > warningLimit
+            ? `<p class="hint">${t("Endast de första {n} varningarna visas.", { n: warningLimit })}</p>`
+            : ""
+        }`,
+      })
+    : "";
 
   const content = `
   ${flash(input.url, locale)}
+  ${importWarnings}
   <div class="grid">
     <div class="span-12"><div class="grid kpi-grid">${[
       kpi({ label: t("Lagervärde"), value: sek(locale, k.inventoryValue), sub: t(k.skuCount === 1 ? "{n} artikel · {units} enheter" : "{n} artiklar · {units} enheter", { n: sv(locale, k.skuCount), units: sv(locale, k.stockUnits) }), href: `/app/artiklar?analys=${input.analysisId}&sort=value`, spark: sparkline(intel.items.slice(0, 24).map((i) => i.value)) }),
@@ -161,7 +285,7 @@ export function dashboardPage(input: PageContext & {
       kpi({ label: t("Överlager"), value: sek(locale, k.overstockValue), sub: itemCount(k.overstockCount), tone: "warn", href: `/app/artiklar?analys=${input.analysisId}&action=reduce` }),
       kpi({ label: t("Lageromsättning"), value: t("{n} ggr/år", { n: num(locale, k.turns, 2) }), sub: k.daysOfInventory ? t("{n} dagars liggtid", { n: sv(locale, k.daysOfInventory) }) : t("saknar historik"), href: `/app/artiklar?analys=${input.analysisId}&sort=turns&dir=asc` }),
       kpi({ label: t("Bristrisk"), value: itemCount(k.stockoutRiskCount), sub: t("{value} i riskerad försäljning", { value: sek(locale, k.stockoutRiskValue) }), tone: "warn", href: `/app/artiklar?analys=${input.analysisId}&action=reorder` }),
-      kpi({ label: t("Frigjort kapital"), value: moneyRange(locale, k.potentialReleaseLow, k.potentialReleaseHigh), sub: t("25–55 % realisationsgrad"), tone: "good", href: `/app/simulering?analys=${input.analysisId}` }),
+      kpi({ label: t("Frigjort kapital"), value: moneyRange(locale, k.potentialReleaseLow, k.potentialReleaseHigh), sub: releaseSub, tone: "good", href: `/app/simulering?analys=${input.analysisId}` }),
     ]
       .map((box) => `<div class="span-4">${box}</div>`)
       .join("")}</div></div>
@@ -171,43 +295,75 @@ export function dashboardPage(input: PageContext & {
       body: `<div class="health-band">${healthRing}
         <div class="health-copy">
           <p class="eyebrow">${t("Lagerhälsa")}</p>
-          <p class="health-note">${t("Kapital som sitter i fel artiklar drar ned betyget. 100 är ett lager där varje krona rör sig i takt med efterfrågan. Inaktivt lager, överlager, bristrisk och rotation vägs samman.")}</p>
+          <p class="health-note">${t("Inaktivt lager, överlager, bristrisk och rotation vägt samman. Bidragen avrundas till en decimal och summerar exakt till totalpoängen; 100 = varje krona rör sig med efterfrågan.")}</p>
         </div>
         <div class="health-drivers"><p class="folio">${t("Drivare")}</p>${drivers}</div></div>`,
     })}
 
     ${card({
       title: t("Kapitalfördelning"),
-      subtitle: t("Lagervärde per kategori. Ytan är pengarna."),
       span: 7,
       body: treemap(
-        intel.capital.byCategory.slice(0, 8).map((c) => ({ label: localizeCategory(c.label, locale), value: c.value, dead: c.deadValue })),
-        { height: 340, locale },
+        intel.capital.byCategory.map((c) => ({ label: localizeCategory(c.label, locale), value: c.value, dead: c.deadValue })),
+        { height: 340, locale, restLabel: t("Övriga kategorier") },
       ) +
-        `<div class="legend">${intel.capital.byCategory
+        `<div class="legend legend-ramp">
+          <span class="legend-note">${t("Färg = andel inaktivt kapital")}</span>
+          <span><i class="lg-chip" style="background:var(--matrix-1)"></i>${t("Friskt kapital")}</span>
+          <span><i class="lg-chip" style="background:var(--matrix-3)"></i>${t("Delvis inaktivt")}</span>
+          <span><i class="lg-chip" style="background:var(--matrix-5)"></i>${t("Inaktivt kapital")}</span>
+        </div>
+        <p class="tm-shares">${intel.capital.byCategory
           .slice(0, 6)
-          .map((c) => `<span><i style="background:var(--series-${(intel.capital.byCategory.indexOf(c) % 6) + 1})"></i>${esc(localizeCategory(c.label, locale))} · ${pct(locale, c.share)}</span>`)
-          .join("")}</div>`,
+          .map((c) => `<span>${esc(localizeCategory(c.label, locale))} · ${pct(locale, c.share)}</span>`)
+          .join("")}</p>`,
     })}
     ${card({
       title: t("ABC / XYZ"),
-      subtitle: t("Var kapitalet sitter mot hur förutsägbar efterfrågan är."),
       span: 5,
-      body: abcXyzMatrix(intel.classification.matrix, { locale }) +
-        `<p class="hint" style="margin-top:10px">${t("AX är kärnan: stort värde, jämn efterfrågan. CZ är kandidater för utförsäljning.")}</p>`,
+      body: abcXyzMatrix(intel.classification.matrix, {
+        locale,
+        analysisId: input.analysisId,
+        articles: result.items.map((i) => ({
+          sku: i.sku,
+          name: i.name,
+          abc: i.abc,
+          xyz: i.xyz,
+          action: i.action,
+          value: i.value,
+        })),
+        cutoffs: CLASS_CUTOFFS,
+      }) +
+        `<p class="hint" style="margin-top:10px">${t("AX = stort värde, jämn efterfrågan. CZ = kandidater för utförsäljning.")}</p>
+        <p class="hint">${abcFootnote}</p>`,
     })}
 
     ${card({
       title: t("Prioriterade åtgärder"),
-      subtitle: t("Poäng av kapitalvikt, åtgärdens allvar, marginalpåverkan och brådska."),
+      subtitle: t("Kapitalvikt, allvar, marginal och brådska."),
       span: 6,
-      actions: `<a class="link-btn" href="/app/artiklar?analys=${input.analysisId}&sort=priority">Alla →</a>`,
+      actions: `<a class="link-btn" href="/app/artiklar?analys=${input.analysisId}&sort=priority">${t("Alla →")}</a>`,
       body: priorityList,
     })}
 
     ${card({
+      title: t("Lönsamhet"),
+      span: 6,
+      body: `<div class="kv">
+        <dl><dt>${t("Försäljningsintäkt")}</dt><dd>${sek(locale, intel.profitability.revenue)}</dd></dl>
+        <dl><dt>${t("Inköpskostnad (COGS)")}</dt><dd>${sek(locale, intel.profitability.cogs)}</dd></dl>
+        <dl><dt>${t("Bruttovinst")}</dt><dd>${sek(locale, intel.profitability.grossProfit)}</dd></dl>
+        <dl><dt>${t("Bruttomarginal")}</dt><dd>${pct(locale, intel.profitability.marginPct)}</dd></dl>
+        <dl><dt>${t("Lagervärde / kapitalbindning")}</dt><dd>${sek(locale, intel.profitability.inventoryValue)}</dd></dl>
+        <dl><dt>${t("Försäljningsvärde i lager")}</dt><dd>${sek(locale, intel.profitability.stockSalesValue)}</dd></dl>
+        <dl><dt>${t("Låg marginal")}</dt><dd>${intel.profitability.lowMarginCount}</dd></dl>
+        <dl><dt>${t("Negativ marginal")}</dt><dd>${intel.profitability.negativeMarginCount}</dd></dl>
+      </div>
+      <div class="mt-4">${barChart(profitBars, { unit: t("Täckningsbidrag per kategori"), tone: "mint" })}</div>`,
+    })}
+
+    ${card({
       title: t("Riskprofil"),
-      subtitle: t("Normaliserat 0–100 per område."),
       span: 3,
       body: riskRadar([
         { label: t("Inaktivt lager"), value: Math.min(1, (k.deadStockValue / Math.max(1, k.inventoryValue)) / 0.25) },
@@ -220,54 +376,48 @@ export function dashboardPage(input: PageContext & {
 
     ${card({
       title: t("Lagervärde över tid"),
-      subtitle: t("{n} mätpunkter i organisationen.", { n: input.snapshots.length }),
+      subtitle: t("{n} mätpunkter · en per importdag, senaste 24.", { n: input.snapshots.length }),
       span: 3,
       body: valueTimeline(input.snapshots, { locale }),
     })}
 
     ${card({
       title: t("Lagerhälsokarta"),
-      subtitle: t("En ruta per artikel. Färg = åtgärdsbehov, intensitet = kapital."),
-      span: 7,
+      subtitle: t("En ruta per artikel. Färg = åtgärdsbehov."),
+      span: 6,
       body:
         healthMap(
-          intel.items.slice(0, 720).map((i) => ({ sku: i.sku, name: i.name, score: i.priorityScore, value: i.value, action: i.action })),
+          intel.items.slice(0, 720).map((i) => ({
+            sku: i.sku,
+            name: i.name,
+            score: i.priorityScore,
+            value: i.value,
+            action: i.action,
+            stock: i.stock,
+            coverDays: i.coverDays,
+          })),
+          { locale, analysisId: input.analysisId },
         ) +
-        `<div class="legend"><span><i style="background:var(--success)"></i>${t("OK")}</span><span><i style="background:var(--warning)"></i>${t("Bevaka")}</span><span><i style="background:var(--critical)"></i>${t("Risk")}</span><span><i style="background:var(--ink-muted)"></i>${t("Inaktivt lager")}</span></div>`,
+        `<p class="hint hm-help">${t("Klicka på en ruta för att se artikel, åtgärd och lagervärde.")}</p>
+        <div class="legend"><span><i class="lg-chip" style="background:var(--success)"></i>${t("OK")}</span><span><i class="lg-chip" style="background:var(--warning)"></i>${t("Bevaka")}</span><span><i class="lg-chip" style="background:var(--critical)"></i>${t("Risk")}</span><span><i class="lg-chip" style="background:var(--neutral)"></i>${t("Inaktivt lager")}</span></div>`,
     })}
 
     ${card({
       title: t("Avvikelser"),
-      subtitle: t("Statistiskt avvikande rörelser i månadshistoriken."),
-      span: 5,
+      span: 6,
       body: anomalyList,
     })}
 
     ${card({
-      title: t("Lönsamhet"),
-      subtitle: t("Täckningsbidrag per artikel, aggregerat."),
-      span: 4,
-      body: `<div class="kv">
-        <div><dt>${t("Bruttomarginal")}</dt><dd>${pct(locale, intel.profitability.marginPct)}</dd></div>
-        <div><dt>${t("Täckningsbidrag")}</dt><dd>${sek(locale, intel.profitability.grossProfit)}</dd></div>
-        <div><dt>${t("Låg marginal")}</dt><dd>${intel.profitability.lowMarginCount}</dd></div>
-        <div><dt>${t("Negativ marginal")}</dt><dd>${intel.profitability.negativeMarginCount}</dd></div>
-      </div>
-      <div class="mt-4">${barChart(
-        intel.profitability.byCategory.slice(0, 6).map((c) => ({ label: localizeCategory(c.category, locale), value: c.profit })),
-        { height: 170, unit: t("Täckningsbidrag per kategori"), tone: "mint" },
-      )}</div>`,
-    })}
-
-    ${card({
       title: t("Rotationskarta"),
-      subtitle: t("Omsättning mot marginal. Storlek = lagervärde."),
-      span: 8,
+      subtitle: t("Omsättning mot marginal. Storlek = värde."),
+      span: 6,
       body: velocityMap(
         intel.items
           .filter((i) => i.soldPeriod > 0)
           .slice(0, 240)
-          .map((i) => ({ x: i.turns, y: Math.max(0, i.marginPct ?? 0), size: i.value, label: `${i.name}: ${num(locale, i.turns, 1)} ggr, ${pct(locale, i.marginPct ?? 0)}`, group: (i.marginPct ?? 0) < 0 ? "neg" : "ok" })),
+          .map((i) => ({ x: i.turns, y: Math.max(0, i.marginPct ?? 0), size: i.value, label: `${i.name}: ${num(locale, i.turns, 1)}×, ${pct(locale, i.marginPct ?? 0)}`, group: (i.marginPct ?? 0) < 0 ? "neg" : "ok" })),
+        { locale },
       ),
     })}
   </div>`;
@@ -305,6 +455,7 @@ export interface ItemsPageInput extends PageContext {
     actions: Array<{ key: string; c: number; v: number }>;
   };
   query: Record<string, string>;
+  canDelete?: boolean;
 }
 
 export function itemsPage(input: ItemsPageInput): string {
@@ -339,8 +490,11 @@ export function itemsPage(input: ItemsPageInput): string {
       : ""
   }</p>` : ""}`;
 
+  const pickable = Boolean(input.canDelete);
   const rowsHtml = table({
+    locale,
     columns: [
+      ...(pickable ? [{ key: "_sel", label: "" }] : []),
       { key: "sku", label: t("Artikel"), sortable: true },
       { key: "name", label: t("Benämning"), sortable: true },
       { key: "category", label: t("Kategori") },
@@ -355,6 +509,9 @@ export function itemsPage(input: ItemsPageInput): string {
       { key: "action", label: t("Åtgärd") },
     ],
     rows: input.rows.map((r) => ({
+      _sel: pickable
+        ? `<input type="checkbox" name="sku" value="${esc(r.sku)}" aria-label="${esc(t("Markera {n}", { n: String(r.sku) }))}">`
+        : "",
       sku: `<span class="mono">${esc(r.sku)}</span>`,
       name: `${esc(r.name)}${
         Number(r._rank) === 7
@@ -375,6 +532,7 @@ export function itemsPage(input: ItemsPageInput): string {
       action: actionBadge(String(r.action ?? "ok"), locale),
     })),
     rowHref: (row) => `/app/artiklar/${encodeURIComponent(String(row.sku).replace(/<[^>]*>/g, ""))}?analys=${input.analysisId}`,
+    rowAttrs: (row) => `data-sku="${esc(String(row.sku).replace(/<[^>]*>/g, ""))}" data-abc="${esc(row.abc ?? "")}"`,
     empty: t("Inga artiklar matchar filtret."),
     sortKey: q.sort ?? "value",
     sortDir: (q.dir as "asc" | "desc") ?? "desc",
@@ -389,12 +547,22 @@ export function itemsPage(input: ItemsPageInput): string {
     user: input.user,
     org: input.org,
     role: input.role,
-    subtitle: t("{n} artiklar · lagervärde {value}", { n: sv(locale, input.total), value: sek(locale, input.totalValue) }),
+    subtitle: t(input.total === 1 ? "{n} artikel · lagervärde {value}" : "{n} artiklar · lagervärde {value}", { n: sv(locale, input.total), value: sek(locale, input.totalValue) }),
     actions: `<a class="btn btn-ghost" href="/app/analys/${input.analysisId}/export.xlsx">${icon("download", 16)} Excel</a>
       <a class="btn btn-ghost" href="/app/analys/${input.analysisId}/export.csv">${icon("download", 16)} CSV</a>`,
     toolbar,
-    content: `<section class="card"><div class="card-body flush">${rowsHtml}</div>
-      ${pagination({ page: input.page, pages: input.pages, baseQuery: { ...input.query, analys: input.analysisId } })}
+    content: `${flash(input.url, locale)}<section class="card"><div class="card-body flush">
+      ${pickable ? `<form method="post" action="/app/radera/artiklar" data-pick-form>
+        <input type="hidden" name="analys" value="${esc(input.analysisId)}">
+        <div class="bulk-bar">
+          <label class="flex center gap-2"><input type="checkbox" data-pick-all> ${t("Markera alla på sidan")}</label>
+          <span class="muted" data-pick-count>${t("0 markerade")}</span>
+          <button class="btn btn-danger btn-sm" type="submit" data-pick-submit disabled>${icon("trash", 15)} ${t("Radera markerade")}</button>
+        </div>
+        ${rowsHtml}
+      </form>` : rowsHtml}
+      </div>
+      ${pagination({ page: input.page, pages: input.pages, baseQuery: { ...input.query, analys: input.analysisId }, locale })}
     </section>`,
   });
 }
@@ -423,12 +591,56 @@ export function itemPage(input: PageContext & {
   plan: SupplyPlan | null;
   history: number[];
   similar: Array<{ sku: string; name: string; value: number; turns: number }>;
+  /** The import behind the selected analysis, for end-to-end traceability. */
+  importRef?: { id: string; started_at: string; filename: string } | null;
 }): string {
   const locale = input.locale;
   const t = appTranslator(locale);
   const item = input.item;
-  const seller = Number(item.value);
-  const marginPct = item.margin_pct === null ? null : Number(item.margin_pct);
+  const analyzed = input.result.items.find((entry) => entry.sku === item.sku) ?? null;
+  // The analyzed row is the shared calculation. The database row is only a
+  // fallback for fields the analysis does not carry.
+  const stock = analyzed?.stock ?? Number(item.stock);
+  const cost = analyzed?.cost ?? Number(item.cost);
+  const price = analyzed?.price ?? (item.price === null ? null : Number(item.price));
+  const sold = analyzed?.soldPeriod ?? Number(item.sold);
+  const revenue = analyzed?.revenuePeriod ?? Number(item.revenue);
+  const seller = analyzed?.value ?? Number(item.value);
+  const marginPct = price === null || price <= 0 ? null : ((price - cost) / price) * 100;
+  const cogs = sold * cost;
+  const grossProfit = revenue - cogs;
+  const unitMargin = price === null ? null : price - cost;
+  const salesValueAtStock = price === null ? null : stock * price;
+  const historyTotal = input.history.reduce((sum, value) => sum + value, 0);
+  const historyZeroMonths = input.history.filter((value) => value === 0).length;
+  const lastMonth = input.history.length > 0 ? input.history[input.history.length - 1]! : null;
+  const location = analyzed?.storage || (item.warehouse ? String(item.warehouse) : null);
+  const leadTime = analyzed?.leadTimeDays ?? (item.leadTimeDays !== undefined ? Number(item.leadTimeDays) : null);
+  const xyzReasonText = !analyzed || analyzed.xyz !== null
+    ? null
+    : ({
+        no_history: t("Ingen månadshistorik finns, så efterfrågan kan inte klassificeras."),
+        insufficient_history: t("Historiken är kortare än 6 månader, så variationskoefficienten är inte tillförlitlig."),
+        zero_demand: t("Medelefterfrågan är noll. Variationskoefficienten beräknas inte och artikeln tvingas inte in i en XYZ-klass."),
+        missing_values: t("Historiken innehåller saknade värden, så artikeln klassificeras inte."),
+      } as Record<string, string>)[(analyzed as { xyzReason?: string }).xyzReason ?? "no_history"] ?? null;
+  const moq = analyzed?.moq ?? (item.moq !== undefined && item.moq !== null ? Number(item.moq) : null);
+  const safetyStock = analyzed?.safetyStock ?? null;
+  const reorderPoint = analyzed?.reorderPoint ?? null;
+  const available = analyzed?.available ?? (item.available !== undefined ? Number(item.available) : stock);
+  const reserved = analyzed?.reserved ?? (item.reserved !== undefined ? Number(item.reserved) : 0);
+  const stockStatus =
+    (analyzed?.action ?? item.action) === "write_off" || (analyzed?.action ?? item.action) === "liquidate"
+      ? t("Inaktivt lager")
+      : analyzed?.stockoutRisk
+        ? t("Bristrisk")
+        : (analyzed?.overstockQty ?? Number(item.overstockQty ?? 0)) > 0
+          ? t("Överlager")
+          : t("Balanserad");
+  const forecastWape = input.forecast ? pct(locale, input.forecast.metrics.wape * 100) : "–";
+  const forecastMape = input.forecast?.metrics.mape === null || input.forecast?.metrics.mape === undefined
+    ? "–"
+    : pct(locale, input.forecast.metrics.mape * 100);
 
   const historyPoints = input.history.map((v, i) => ({ label: `M${i + 1}`, value: v }));
   const forecastSeries = input.forecast
@@ -441,9 +653,11 @@ export function itemPage(input: PageContext & {
 
   const candidates = input.forecast
     ? table({
+    locale,
         columns: [
           { key: "method", label: t("Modell") },
           { key: "wape", label: "WAPE", align: "right" },
+          { key: "mape", label: "MAPE", align: "right" },
           { key: "mae", label: "MAE", align: "right" },
           { key: "rmse", label: "RMSE", align: "right" },
           { key: "bias", label: "Bias", align: "right" },
@@ -451,6 +665,7 @@ export function itemPage(input: PageContext & {
         rows: input.forecast.candidates.map((c) => ({
           method: `${esc(methodLabel(locale, c.method))}${c.method === input.forecast!.method ? " " + badge(t("vald"), "ok") : ""}`,
           wape: pct(locale, c.metrics.wape * 100),
+          mape: c.metrics.mape === null ? "–" : pct(locale, c.metrics.mape * 100),
           mae: num(locale, c.metrics.mae, 1),
           rmse: num(locale, c.metrics.rmse, 1),
           bias: num(locale, c.metrics.bias * 100, 1) + " %",
@@ -481,6 +696,7 @@ export function itemPage(input: PageContext & {
               ${badge(`XYZ ${esc(item.xyz ?? "–")}`, "default")}
               ${badge(esc(String(item.warehouse ?? t("Huvudlager"))), "default")}
             </div>
+            ${xyzReasonText ? `<p class="hint" style="margin-top:8px">${esc(xyzReasonText)}</p>` : ""}
           </div>
           <dl class="fact-grid">
             <div class="fact"><dt>${t("Lagervärde")}</dt><dd>${sek(locale, seller)}</dd></div>
@@ -489,9 +705,52 @@ export function itemPage(input: PageContext & {
             <div class="fact"><dt>${t("Täckning")}</dt><dd>${item.cover_days === null ? "–" : `${sv(locale, Number(item.cover_days))} d`}</dd></div>
             <div class="fact"><dt>${t("Marginal")}</dt><dd>${marginPct === null ? "–" : pct(locale, marginPct)}</dd></div>
             <div class="fact"><dt>${t("Prioritet")}</dt><dd>${num(locale, Number(item.priority), 0)}</dd></div>
+            <div class="fact"><dt>${t("Analys")}</dt><dd class="mono">#${esc(input.analysisId.slice(0, 8))}</dd></div>
+            <div class="fact"><dt>${t("Import")}</dt><dd>${input.importRef ? `<span class="mono">#${esc(input.importRef.id.slice(0, 8))}</span><br><span class="tag-inline">${dateTime(locale, input.importRef.started_at)}</span>` : t("saknas")}</dd></div>
           </dl>
         </div>
       </div></section>
+
+      ${card({
+        span: 8,
+        title: t("Artikeldata"),
+        subtitle: t("Samtliga fält som styr analysen. Värdena kommer från samma importerade datamängd som översikten."),
+        body: `<div class="item-facts">
+          <div><dt>${t("Artikelnummer")}</dt><dd class="mono">${esc(item.sku)}</dd></div>
+          <div><dt>${t("Benämning")}</dt><dd>${esc(item.name)}</dd></div>
+          <div><dt>${t("Kategori")}</dt><dd>${esc(item.category ? localizeCategory(String(item.category), locale) : "–")}</dd></div>
+          <div><dt>${t("Leverantör")}</dt><dd>${esc(item.supplier ? String(item.supplier) : "–")}</dd></div>
+          <div><dt>${t("Lagerplats")}</dt><dd>${esc(location ?? "–")}</dd></div>
+          <div><dt>${t("Lagerstatus")}</dt><dd>${esc(stockStatus)}</dd></div>
+          <div><dt>${t("Saldo")}</dt><dd>${sv(locale, stock)}</dd></div>
+          <div><dt>${t("Tillgängligt")}</dt><dd>${sv(locale, available)}</dd></div>
+          <div><dt>${t("Reserverat")}</dt><dd>${sv(locale, reserved)}</dd></div>
+          <div><dt>${t("Inköpspris")}</dt><dd>${sek(locale, cost)}</dd></div>
+          <div><dt>${t("Försäljningspris")}</dt><dd>${price === null ? t("saknas") : sek(locale, price)}</dd></div>
+          <div><dt>${t("Bruttomarginal per enhet")}</dt><dd>${unitMargin === null ? "–" : sek(locale, unitMargin)}</dd></div>
+          <div><dt>${t("Bruttomarginal")}</dt><dd>${marginPct === null ? "–" : pct(locale, marginPct)}</dd></div>
+          <div><dt>${t("Ledtid")}</dt><dd>${leadTime === null ? "–" : `${num(locale, leadTime)} d`}</dd></div>
+          <div><dt>MOQ</dt><dd>${moq === null ? "–" : num(locale, moq)}</dd></div>
+          <div><dt>${t("Säkerhetslager")}</dt><dd>${safetyStock === null ? "–" : num(locale, safetyStock, 0)}</dd></div>
+          <div><dt>${t("Beställningspunkt")}</dt><dd>${reorderPoint === null ? "–" : num(locale, reorderPoint, 0)}</dd></div>
+          <div><dt>ABC</dt><dd>${esc(item.abc ?? "–")}</dd></div>
+          <div><dt>XYZ</dt><dd>${esc(item.xyz ?? "–")}</dd></div>
+        </div>`,
+      })}
+
+      ${card({
+        span: 4,
+        title: t("Ekonomi"),
+        subtitle: t("Inköpskostnad, intäkt och kapitalbindning är separata mått."),
+        body: `<dl class="stat-line"><dt>${t("Försäljningsintäkt i period")}</dt><dd>${sek(locale, revenue)}</dd></dl>
+        <dl class="stat-line"><dt>${t("Inköpskostnad (COGS)")}</dt><dd>${sek(locale, cogs)}</dd></dl>
+        <dl class="stat-line"><dt>${t("Bruttovinst")}</dt><dd>${sek(locale, grossProfit)}</dd></dl>
+        <dl class="stat-line"><dt>${t("Bruttomarginal")}</dt><dd>${revenue > 0 ? pct(locale, (grossProfit / revenue) * 100) : "–"}</dd></dl>
+        <dl class="stat-line"><dt>${t("Lagervärde")}</dt><dd>${sek(locale, seller)}</dd></dl>
+        <dl class="stat-line"><dt>${t("Försäljningsvärde i lager")}</dt><dd>${salesValueAtStock === null ? "–" : sek(locale, salesValueAtStock)}</dd></dl>
+        <dl class="stat-line"><dt>${t("Kapitalbindning")}</dt><dd>${sek(locale, seller)}</dd></dl>
+        <p class="hint mt-4">${t("Lagervärde och kapitalbindning värderas till inköpspris. Försäljningsvärde i lager värderas till försäljningspris och är inte en intäkt förrän varan säljs.")}</p>`,
+      })}
 
       ${card({
         span: 4,
@@ -508,9 +767,10 @@ export function itemPage(input: PageContext & {
         span: 12,
         title: t("Efterfrågan och prognos"),
         subtitle: input.forecast
-          ? t("Modell {method} · konfidens {confidence} · WAPE {wape}", { method: methodLabel(locale, input.forecast.method), confidence: confidenceLabel(locale, input.forecast.confidence), wape: pct(locale, input.forecast.metrics.wape * 100) })
+          ? t("Modell {method} · konfidens {confidence} · WAPE {wape} · MAPE {mape}", { method: methodLabel(locale, input.forecast.method), confidence: confidenceLabel(locale, input.forecast.confidence), wape: forecastWape, mape: forecastMape })
           : t("Prognos kräver månadshistorik"),
-        body: chart + (input.forecast ? `<div class="legend"><span><i style="background:var(--ink-soft)"></i>${t("Historik")}</span><span><i style="background:var(--signal)"></i>${t("Prognos")}</span><span><i style="background:var(--signal-band)"></i>${t("95 % intervall")}</span></div>` : ""),
+        body: chart + (input.forecast ? `<div class="legend"><span><i style="background:var(--ink-soft)"></i>${t("Historik")}</span><span><i style="background:var(--signal)"></i>${t("Prognos")}</span><span><i style="background:var(--signal-band)"></i>${t("95 % intervall")}</span></div>` : "") +
+          `<p class="hint mt-4">${t("Historik: {months} månader · {total} enheter · snitt {avg}/månad · senaste månad {last} · {zero} nollmånader.", { months: num(locale, input.history.length), total: num(locale, historyTotal), avg: num(locale, input.history.length ? historyTotal / input.history.length : 0, 1), last: lastMonth === null ? "–" : num(locale, lastMonth), zero: num(locale, historyZeroMonths) })}</p>`,
       })}
 
       ${card({
@@ -519,12 +779,12 @@ export function itemPage(input: PageContext & {
         subtitle: t("Beräknat med vald servicenivå och artikelns ledtid."),
         body: input.plan
           ? `<div class="kv">
-              <div><dt>${t("Prognos/månad")}</dt><dd>${num(locale, input.plan.forecastMonthly, 1)}</dd></div>
-              <div><dt>${t("Säkerhetslager")}</dt><dd>${num(locale, input.plan.safetyStock, 0)}</dd></div>
-              <div><dt>${t("Beställningspunkt")}</dt><dd>${num(locale, input.plan.reorderPoint, 0)}</dd></div>
-              <div><dt>${t("Orderkvantitet")}</dt><dd>${num(locale, input.plan.orderQuantity, 0)}</dd></div>
-              <div><dt>${t("Bristrisk")}</dt><dd>${pct(locale, input.plan.stockoutProbability * 100, 0)}</dd></div>
-              <div><dt>${t("Förväntad brist")}</dt><dd>${num(locale, input.plan.expectedShortageUnits, 1)} st</dd></div>
+              <dl><dt>${t("Prognos/månad")}</dt><dd>${num(locale, input.plan.forecastMonthly, 1)}</dd></dl>
+              <dl><dt>${t("Säkerhetslager")}</dt><dd>${num(locale, input.plan.safetyStock, 0)}</dd></dl>
+              <dl><dt>${t("Beställningspunkt")}</dt><dd>${num(locale, input.plan.reorderPoint, 0)}</dd></dl>
+              <dl><dt>${t("Orderkvantitet")}</dt><dd>${num(locale, input.plan.orderQuantity, 0)}</dd></dl>
+              <dl><dt>${t("Bristrisk")}</dt><dd>${pct(locale, input.plan.stockoutProbability * 100, 0)}</dd></dl>
+              <dl><dt>${t("Förväntad brist")}</dt><dd>${num(locale, input.plan.expectedShortageUnits, 1)} st</dd></dl>
             </div>
             <p class="hint mt-4">${t("Orderkvantitet är EOQ (beställningskostnad 350 kr, lagerhållningsränta 22 %) avrundat uppåt till minsta orderkvantitet.")}</p>`
           : `<p class="muted">${t("Saknar historik för att beräkna beställningspunkt.")}</p>`,
@@ -533,8 +793,34 @@ export function itemPage(input: PageContext & {
       ${card({
         span: 6,
         title: t("Modelljämförelse"),
-        subtitle: t("Backtest på de tre senaste månaderna. Lägst WAPE vinner."),
+        subtitle: t("Backtest på de senaste månaderna. Lägst WAPE vinner."),
         body: candidates || `<p class="muted">${t("Ingen backtest möjlig med så kort historik.")}</p>`,
+      })}
+
+      ${card({
+        span: 6,
+        title: t("Utfall mot prognos"),
+        subtitle: t("Backtest på de senaste månaderna. Utfall är faktisk försäljning, prognos är modellens skattning före perioden."),
+        body: input.forecast?.backtest
+          ? table({
+    locale,
+              columns: [
+                { key: "period", label: t("Period") },
+                { key: "actual", label: t("Utfall"), align: "right" },
+                { key: "predicted", label: t("Prognos"), align: "right" },
+                { key: "error", label: t("Avvikelse"), align: "right" },
+              ],
+              rows: input.forecast.backtest.actual.map((actual, index) => {
+                const predicted = input.forecast!.backtest!.predicted[index] ?? 0;
+                return {
+                  period: `M-${input.forecast!.backtest!.actual.length - index}`,
+                  actual: num(locale, actual),
+                  predicted: num(locale, predicted),
+                  error: `${actual === 0 ? "–" : `${predicted >= actual ? "+" : ""}${pct(locale, ((predicted - actual) / actual) * 100, 0)}`}`,
+                };
+              }),
+            })
+          : `<p class="muted">${t("Ingen backtest är möjlig med så kort historik.")}</p>`,
       })}
 
       ${card({
@@ -543,6 +829,7 @@ export function itemPage(input: PageContext & {
         subtitle: t("Samma kategori, sorterade på kapital."),
         body: input.similar.length
           ? table({
+    locale,
               columns: [
                 { key: "sku", label: t("Artikel") },
                 { key: "name", label: t("Benämning") },
@@ -558,6 +845,7 @@ export function itemPage(input: PageContext & {
                 bar: bar(s.value, input.similar[0]?.value ?? 1),
               })),
               rowHref: (row) => `/app/artiklar/${encodeURIComponent(String(row.sku).replace(/<[^>]*>/g, ""))}?analys=${input.analysisId}`,
+    rowAttrs: (row) => `data-sku="${esc(String(row.sku).replace(/<[^>]*>/g, ""))}" data-abc="${esc(row.abc ?? "")}"`,
             })
           : `<p class="muted">${t("Inga jämförbara artiklar i kategorin.")}</p>`,
       })}
@@ -569,17 +857,29 @@ function sqlActionText(locale: Locale, action: string, item: Record<string, unkn
   const stock = Number(item.stock);
   switch (action) {
     case "write_off":
-      return `Ingen försäljning i perioden trots ${sv(locale, stock)} enheter i lager. Bedöm nedskrivning eller retur till leverantör.`;
+      return locale === "sv"
+        ? `Ingen försäljning i perioden trots ${sv(locale, stock)} enheter i lager. Bedöm nedskrivning eller retur till leverantör.`
+        : `No sales in the period despite ${appNum(locale, stock, 0)} units in stock. Consider a write-down or return to the supplier.`;
     case "liquidate":
-      return `Artikeln säljer inte längre men har ${sv(locale, stock)} enheter kvar. Realisera via kampanj eller outlet innan värdet urholkas ytterligare.`;
+      return locale === "sv"
+        ? `Artikeln säljer inte längre men har ${sv(locale, stock)} enheter kvar. Realisera via kampanj eller outlet innan värdet urholkas ytterligare.`
+        : `The item no longer sells but ${appNum(locale, stock, 0)} units remain. Clear it through a campaign or outlet before the value erodes further.`;
     case "reduce":
-      return `Saldo ligger över vad ledtid och efterfrågan motiverar. Stoppa påfyllning till lagret är nere på beställningspunkt.`;
+      return locale === "sv"
+        ? "Saldo ligger över vad ledtid och efterfrågan motiverar. Stoppa påfyllning till lagret är nere på beställningspunkt."
+        : "Stock exceeds what lead time and demand justify. Stop replenishment until inventory falls to the reorder point.";
     case "reorder":
-      return `Täckningen är kortare än ledtiden. Beställ nu för att undvika bristsituation.`;
+      return locale === "sv"
+        ? "Täckningen är kortare än ledtiden. Beställ nu för att undvika bristsituation."
+        : "Coverage is shorter than the lead time. Order now to avoid a stockout.";
     case "review":
-      return `Underlaget är ofullständigt för artikeln (pris eller saldo). Komplettera innan beslut.`;
+      return locale === "sv"
+        ? "Underlaget är ofullständigt för artikeln (pris eller saldo). Komplettera innan beslut."
+        : "Data for this item is incomplete (price or stock). Complete it before making a decision.";
     default:
-      return "Ingen åtgärd krävs. Artikeln ligger inom sina styrgränser.";
+      return locale === "sv"
+        ? "Ingen åtgärd krävs. Artikeln ligger inom sina styrgränser."
+        : "No action required. The item is within its control limits.";
   }
 }
 
@@ -600,7 +900,7 @@ export function forecastPage(input: PageContext & {
     ? forecastChart(
         rows[0].forecast.history.map((v, i) => ({ label: `M${i + 1}`, value: v })),
         rows[0].forecast.points.map((p) => ({ label: `P${p.step}`, value: p.value, lo: p.lo, hi: p.hi })),
-        { width: 720, height: 260, locale },
+        { width: 720, height: 560, locale },
       )
     : `<div class="chart-placeholder">${t("Ingen artikel med månadshistorik hittades.")}</div>`;
 
@@ -620,7 +920,7 @@ export function forecastPage(input: PageContext & {
     user: input.user,
     org: input.org,
     role: input.role,
-    subtitle: t("Efterfrågeprognoser med modellval via backtest, säkerhetslager och dynamiska beställningspunkter."),
+    subtitle: t("Modellval, säkerhetslager och beställningspunkter."),
     actions: `<form method="get" action="/app/prognos" class="flex gap-2 center">
       <input type="hidden" name="analys" value="${input.analysisId}">
       <select name="horisont" data-autosubmit aria-label="${t("Horisont")}">
@@ -637,13 +937,16 @@ export function forecastPage(input: PageContext & {
       ${card({
         span: 4,
         title: t("Modellval"),
-        subtitle: t("Modeller i motorn"),
+        subtitle: "",
         body: `<dl class="stat-line"><dt>${t("Naiv")}</dt><dd>${t("senaste månaden")}</dd></dl>
           <dl class="stat-line"><dt>${t("SES")}</dt><dd>${t("exponentiell utjämning")}</dd></dl>
           <dl class="stat-line"><dt>${t("Holt")}</dt><dd>${t("nivå + trend")}</dd></dl>
           <dl class="stat-line"><dt>${t("Holt-Winters")}</dt><dd>${t("säsong, kräver 24 mån")}</dd></dl>
           <dl class="stat-line"><dt>${t("Croston / SBA")}</dt><dd>${t("glest förekommande efterfrågan")}</dd></dl>
-          <p class="hint mt-4">${t("Valet sker per artikel på lägst WAPE i backtest mot de tre senaste månaderna. Ingen modell väljs för att den är avancerad.")}</p>`,
+          <dl class="stat-line"><dt>${t("TSB")}</dt><dd>${t("sannolikhet × storlek")}</dd></dl>
+          <dl class="stat-line"><dt>${t("ADIDA")}</dt><dd>${t("aggregerad efterfrågan per period")}</dd></dl>
+          <p class="hint mt-4">${t("Valet sker per artikel på lägst WAPE i backtest mot de senaste månaderna. Ingen modell väljs för att den är avancerad. MAPE visas endast när alla utfallsperioder är större än noll; WAPE är då det jämförbara måttet.")}</p>
+          ${rows[0]?.forecast.notes.length ? `<ul class="prose" style="margin:10px 0 0;padding-left:18px;font-size:12px">${rows[0].forecast.notes.map((note) => `<li>${esc(note)}</li>`).join("")}</ul>` : ""}`,
       })}
 
       ${card({
@@ -658,12 +961,14 @@ export function forecastPage(input: PageContext & {
         title: t("Prognos och lagerstyrning per artikel"),
         subtitle: t("Sorterat på lagervärde. Bristrisk är sannolikheten att efterfrågan under ledtid överstiger saldot."),
         body: table({
+    locale,
           columns: [
             { key: "sku", label: t("Artikel") },
             { key: "name", label: t("Benämning") },
             { key: "method", label: t("Modell") },
             { key: "fc", label: t("Prognos/mån"), align: "right" },
             { key: "wape", label: "WAPE", align: "right" },
+            { key: "mape", label: "MAPE", align: "right" },
             { key: "ss", label: t("Säkerhetslager"), align: "right" },
             { key: "rop", label: t("Beställningspunkt"), align: "right" },
             { key: "qty", label: t("Orderqty"), align: "right" },
@@ -675,12 +980,14 @@ export function forecastPage(input: PageContext & {
             method: esc(methodLabel(locale, r.forecast.method)),
             fc: num(locale, r.plan.forecastMonthly, 1),
             wape: pct(locale, r.forecast.metrics.wape * 100, 0),
+            mape: r.forecast.metrics.mape === null ? "–" : pct(locale, r.forecast.metrics.mape * 100, 0),
             ss: num(locale, r.plan.safetyStock, 0),
             rop: num(locale, r.plan.reorderPoint, 0),
             qty: num(locale, r.plan.orderQuantity, 0),
             risk: r.plan.stockoutProbability > 0.5 ? badge(pct(locale, r.plan.stockoutProbability * 100, 0), "danger") : pct(locale, r.plan.stockoutProbability * 100, 0),
           })),
           rowHref: (row) => `/app/artiklar/${encodeURIComponent(String(row.sku).replace(/<[^>]*>/g, ""))}?analys=${input.analysisId}`,
+    rowAttrs: (row) => `data-sku="${esc(String(row.sku).replace(/<[^>]*>/g, ""))}" data-abc="${esc(row.abc ?? "")}"`,
           empty: t("Inga artiklar med tillräcklig historik."),
         }),
       })}
@@ -792,11 +1099,11 @@ export function simulatePage(input: SimulateInput): string {
           title: t("{name} jämfört med basfallet", { name: outcome.input.name }),
           subtitle: t("Positivt netto betyder att åtgärden tjänar mer än den kostar i utebliven marginal."),
           body: `<div class="kv" style="margin-bottom:14px">
-            <div><dt>${t("Lagervärde")}</dt><dd>${sek(locale, outcome.totals.inventoryValue)}</dd></div>
-            <div><dt>${t("Frigjort kapital")}</dt><dd>${sek(locale, outcome.totals.freedCapital)}</dd></div>
-            <div><dt>${t("Uppfyllnadsgrad")}</dt><dd>${pct(locale, outcome.totals.serviceLevel * 100)}</dd></div>
-            <div><dt>${t("Bristrisk")}</dt><dd>${outcome.totals.stockoutRiskCount} artiklar</dd></div>
-            <div><dt>${t("Nettoeffekt/år")}</dt><dd>${sek(locale, outcome.totals.annualNetEffect)}</dd></div>
+            <dl><dt>${t("Lagervärde")}</dt><dd>${sek(locale, outcome.totals.inventoryValue)}</dd></dl>
+            <dl><dt>${t("Frigjort kapital")}</dt><dd>${sek(locale, outcome.totals.freedCapital)}</dd></dl>
+            <dl><dt>${t("Uppfyllnadsgrad")}</dt><dd>${pct(locale, outcome.totals.serviceLevel * 100)}</dd></dl>
+            <dl><dt>${t("Bristrisk")}</dt><dd>${t(outcome.totals.stockoutRiskCount === 1 ? "{n} artikel" : "{n} artiklar", { n: num(locale, outcome.totals.stockoutRiskCount) })}</dd></dl>
+            <dl><dt>${t("Nettoeffekt/år")}</dt><dd>${sek(locale, outcome.totals.annualNetEffect)}</dd></dl>
           </div>
           <div class="outcome-row"><span class="k">${t("Lagervärde")}</span><span class="v">${sek(locale, outcome.totals.inventoryValue)}</span><span class="d">${delta("inventoryValue")}</span></div>
           <div class="outcome-row"><span class="k">${t("Frigjort kapital")}</span><span class="v">${sek(locale, outcome.totals.freedCapital)}</span><span class="d">${delta("freedCapital")}</span></div>
@@ -820,6 +1127,7 @@ export function simulatePage(input: SimulateInput): string {
         ${card({
           title: t("Största effekt per artikel"),
           body: table({
+    locale,
             columns: [
               { key: "sku", label: t("Artikel") },
               { key: "name", label: t("Benämning") },
@@ -834,7 +1142,7 @@ export function simulatePage(input: SimulateInput): string {
               before: sek(locale, r.valueBefore),
               after: sek(locale, r.valueAfter),
               freed: sek(locale, r.freed),
-              risk: r.stockoutAfter ? badge(t("Ja"), "danger") : "Nej",
+              risk: r.stockoutAfter ? badge(t("Ja"), "danger") : t("Nej"),
             })),
             empty: t("Inget scenario beräknat."),
           }),
@@ -866,6 +1174,7 @@ export function copilotPage(input: PageContext & {
         : "";
       const tbl = a.table
         ? table({
+    locale,
             columns: a.table.columns.map((c, i) => ({ key: `c${i}`, label: c, align: a.table!.align?.[i] ?? (i === 0 ? "left" : "right") })),
             rows: a.table.rows.map((row) => Object.fromEntries(row.map((cell, i) => [`c${i}`, esc(cell)]))),
           })
@@ -873,8 +1182,19 @@ export function copilotPage(input: PageContext & {
       const followUps = a.followUps.length
         ? `<div class="chips" style="margin-top:12px">${a.followUps.map((f) => { const local = appText(locale, f); return `<button class="chip" type="button" data-ask="${esc(local)}">${esc(local)}</button>`; }).join("")}</div>`
         : "";
+      const brief = a.brief
+        ? `<div class="decision-brief">
+            <div><span>${t("Identifierat")}</span><p>${esc(a.brief.identified)}</p></div>
+            <div><span>${t("Varför det är viktigt")}</span><p>${esc(a.brief.why)}</p></div>
+            <div><span>${t("Data bakom")}</span><p>${esc(a.brief.data)}</p></div>
+            <div><span>${t("Rekommenderad åtgärd")}</span><p>${esc(a.brief.action)}</p></div>
+            <div><span>${t("Uppskattad ekonomisk effekt")}</span><p>${esc(a.brief.effect)}</p></div>
+            <div><span>${t("Osäkerheter och antaganden")}</span><p>${esc(a.brief.uncertainty)}</p></div>
+          </div>`
+        : "";
       return `<div class="turn turn-bot"><div class="bubble">
         <p>${esc(a.answer)}</p>
+        ${brief}
         ${facts}${tbl ? `<div class="mt-4">${tbl}</div>` : ""}
         ${followUps}
         <div class="sources">${esc(a.sources.join(" · "))} · ${t("konfidens")} ${esc(confidenceLabel(locale, a.confidence))}${a.notes.length ? ` · ${esc(a.notes.join(" "))}` : ""}</div>

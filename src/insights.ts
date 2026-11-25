@@ -315,8 +315,8 @@ export async function enrichWithAi(
   ctx: NarrativeContext,
 ): Promise<Narrative> {
   const fallback = buildTemplateNarrative(analysis, ctx);
-  const { provider, apiKey, model, baseUrl } = config.ai;
-  if (provider === "none" || !apiKey) return fallback;
+  const { provider, apiKey, model, baseUrl, dataProcessingApproved } = config.ai;
+  if (provider === "none" || !apiKey || !dataProcessingApproved) return fallback;
 
   const facts = { ...buildFacts(analysis), foretag: ctx.company };
   const factsJson = JSON.stringify(facts, null, 2);

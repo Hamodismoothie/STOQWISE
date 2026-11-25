@@ -10,12 +10,13 @@
  * `error` so a client can branch without parsing prose.
  */
 import { analyze, type AnalysisResult } from "./analysis.ts";
+import { refreshClassification } from "./core/classification.ts";
 import { EMAILS } from "./brand.ts";
 import { buildIntelligence } from "./core/intelligence.ts";
 import { ask, type ConversationTurn } from "./core/copilot.ts";
 import { buildBaseline, simulate, type ScenarioInput } from "./core/simulate.ts";
 import { forecastSeries, supplyPlan } from "./core/forecast.ts";
-import { getItem, limitsFor, planLimits, queryItems, findApiKey, type ItemQuery } from "./data/repo.ts";
+import { getItem, limitsFor, limitsForOrg, planLimits, queryItems, findApiKey, valueHistory, type ItemQuery } from "./data/repo.ts";
 import { db } from "./db.ts";
 import { json, rateLimit, type RequestContext } from "./http.ts";
 import { ingest, rebuildCsv } from "./pipeline.ts";
@@ -23,6 +24,13 @@ import { buildPdf } from "./pdf.ts";
 import { writeXlsx } from "./xlsx.ts";
 import type { ItemInput } from "./dataset.ts";
 import { buildTemplateNarrative } from "./insights.ts";
+import { isDemoEnvironment } from "./demo.ts";
+import { normalizeWhatIf, whatIf } from "./world.ts";
+import { assertUploadAllowed, safeUploadFilename } from "./integrations/index.ts";
+import { settingEnabled } from "./admin/platform-store.ts";
+
+/** Small cache so a dragged slider does not re-analyse on every pixel. */
+const whatIfCache = new Map<string, string>();
 import { detectLanguage } from "./terminology.ts";
 
 export interface ApiAuth {
@@ -35,8 +43,20 @@ export function apiAuth(ctx: RequestContext): ApiAuth | Response {
   const header = ctx.req.headers.get("authorization") ?? "";
   const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
   if (!token) return json({ error: "unauthorized", message: "Ange Authorization: Bearer <api-nyckel>." }, 401);
+  const sourceLimit = rateLimit(`api-auth:${ctx.ip}`, 600, 60);
+  if (!sourceLimit.ok) {
+    return json({ error: "rate_limited", message: "För många anrop. Försök igen om en stund." }, 429, {
+      "retry-after": String(sourceLimit.retryAfter),
+    });
+  }
   const key = findApiKey(token);
   if (!key) return json({ error: "unauthorized", message: "API-nyckeln är okänd eller återkallad." }, 401);
+  const organization = db.query("SELECT status FROM organizations WHERE id = $o").get({ $o: key.org_id }) as
+    | { status: string }
+    | null;
+  if (!organization || organization.status !== "active") {
+    return json({ error: "organization_suspended", message: "Organisationen är pausad." }, 403);
+  }
 
   const limit = rateLimit(`api:${key.id}`, 240, 60);
   if (!limit.ok) {
@@ -50,6 +70,12 @@ export function apiAuth(ctx: RequestContext): ApiAuth | Response {
 function requireScope(auth: ApiAuth, scope: "read" | "write"): Response | null {
   if (scope === "read") return null;
   if (auth.scopes !== "write") return json({ error: "forbidden", message: "Nyckeln saknar skrivscope." }, 403);
+  if (limitsForOrg(auth.orgId).readOnly) {
+    return json({
+      error: "trial_ended",
+      message: "Provperioden har tagit slut. Organisationen är i läsbart läge och kunddata kan inte ändras.",
+    }, 403);
+  }
   return null;
 }
 
@@ -60,10 +86,14 @@ export function loadAnalysis(orgId: string, id: string) {
     | { id: string; filename: string; rows: number; result_json: string; narrative_json: string | null; created_at: string; period_months: number | null; warehouse: string | null }
     | null;
   if (!row) return null;
+  const stored = JSON.parse(row.result_json) as AnalysisResult;
+  const result = normalizeAnalysis(stored);
   return {
     row,
-    result: JSON.parse(row.result_json) as AnalysisResult,
-    narrative: row.narrative_json ? JSON.parse(row.narrative_json) : null,
+    result,
+    // A story written for the old class counts must not be paired with the
+    // refreshed numbers; callers rebuild it when this is null.
+    narrative: result === stored && row.narrative_json ? JSON.parse(row.narrative_json) : null,
   };
 }
 
@@ -84,11 +114,22 @@ export function rebuildInputs(result: AnalysisResult): ItemInput[] {
     cost: i.cost,
     price: i.price,
     leadTimeDays: i.leadTimeDays,
-    moq: null,
+    moq: i.moq ?? null,
     monthly: i.monthlyDemand,
     totalSold: i.soldPeriod,
     totalRevenue: i.revenuePeriod,
   }));
+}
+
+/**
+ * Re-runs old stored results through the current engine. The source rows are
+ * preserved (stock, cost, monthly history, settings); only derived classes and
+ * KPI arithmetic are refreshed. Nothing is written back to the customer row.
+ */
+export function normalizeAnalysis(result: AnalysisResult): AnalysisResult {
+  // Only classification fields are refreshed; KPI:er, safety stock and
+  // recommendations keep the values the stored analysis actually produced.
+  return refreshClassification(result);
 }
 
 function orgName(orgId: string): string {
@@ -100,6 +141,28 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
   if (!path.startsWith("/api/v1")) return null;
 
   if (path === "/api/v1/health") return json({ status: "ok", version: "2.0.0", time: new Date().toISOString() });
+
+  /* ------------------------------------------- /demo/what-if (public demo)
+     The landing page runs its sliders against the demo engine. No customer
+     data is involved, so no session is required; the response is cached per
+     parameter set to keep a dragged slider from re-analysing on every pixel. */
+  if (path === "/api/v1/demo/what-if" && ctx.req.method === "GET") {
+    const environment = ctx.url.searchParams.get("environment");
+    if (!isDemoEnvironment(environment)) return json({ error: "unknown_environment" }, 400);
+    const locale = ctx.url.searchParams.get("locale") === "en" ? "en" : "sv";
+    const params = normalizeWhatIf({
+      leadDeltaDays: Number(ctx.url.searchParams.get("lead") ?? 0),
+      serviceLevel: Number(ctx.url.searchParams.get("service") ?? 0.95),
+      demandPct: Number(ctx.url.searchParams.get("demand") ?? 0),
+    });
+    const key = `${environment}|${locale}|${params.leadDeltaDays}|${params.serviceLevel}|${params.demandPct}`;
+    const cached = whatIfCache.get(key);
+    if (cached) return new Response(cached, { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "public, max-age=60" } });
+    const body = JSON.stringify(whatIf(environment, params, locale));
+    if (whatIfCache.size > 120) whatIfCache.clear();
+    whatIfCache.set(key, body);
+    return new Response(body, { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "public, max-age=60" } });
+  }
 
   const auth = apiAuth(ctx);
   if (auth instanceof Response) return auth;
@@ -114,6 +177,8 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
       organization: org,
       plan: planLimits[org?.plan ?? "trial"],
       scopes: auth.scopes,
+      trial: limitsForOrg(auth.orgId).trial,
+      readOnly: limitsForOrg(auth.orgId).readOnly,
       analyses: (db.query("SELECT COUNT(*) AS c FROM analyses WHERE org_id = $o AND status = 'ok'").get({ $o: auth.orgId }) as { c: number }).c,
     });
   }
@@ -133,6 +198,7 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
     if (segments.length === 1 && ctx.req.method === "POST") {
       const denied = requireScope(auth, "write");
       if (denied) return denied;
+      if (!settingEnabled("imports_enabled")) return json({ error: "imports_disabled", message: "Importer är tillfälligt avstängda." }, 503);
       let form: Awaited<ReturnType<Request["formData"]>>;
       try {
         form = await ctx.req.formData();
@@ -141,8 +207,14 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
       }
       const file = form.get("file");
       if (!(file instanceof File)) return json({ error: "bad_request", message: "Fältet file saknas." }, 400);
+      const filename = safeUploadFilename(file.name || "api-upload.csv");
+      try {
+        assertUploadAllowed(filename, file.size);
+      } catch (error) {
+        return json({ error: "bad_request", message: error instanceof Error ? error.message : "Filen är inte tillåten." }, 400);
+      }
 
-      const limits = limitsFor((db.query("SELECT plan FROM organizations WHERE id = $o").get({ $o: auth.orgId }) as { plan: string } | null)?.plan ?? "trial");
+      const limits = limitsForOrg(auth.orgId);
       const used = (
         db.query("SELECT COUNT(*) AS c FROM analyses WHERE org_id = $o AND status = 'ok' AND created_at >= $s").get({
           $o: auth.orgId,
@@ -163,9 +235,9 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
         orgId: auth.orgId,
         userId: owner,
         bytes,
-        filename: file.name || "api-upload.csv",
+        filename,
         source: "api",
-        warehouse: String(form.get("warehouse") ?? "Huvudlager"),
+        warehouse: String(form.get("warehouse") ?? "Huvudlager").slice(0, 60),
       });
       if (!outcome.ok) return json({ error: "import_failed", message: outcome.error, warnings: outcome.warnings }, 422);
       return json(
@@ -226,7 +298,8 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
     if (segments[2] === "forecast") {
       const inputs = rebuildInputs(found.result);
       const sku = ctx.url.searchParams.get("sku");
-      const horizon = Math.min(24, Math.max(1, Number(ctx.url.searchParams.get("horizon") ?? 6)));
+      const requestedHorizon = Number(ctx.url.searchParams.get("horizon") ?? 6);
+      const horizon = Math.min(24, Math.max(1, Number.isFinite(requestedHorizon) ? Math.floor(requestedHorizon) : 6));
       const freq = (ctx.url.searchParams.get("frequency") ?? "month") as "month" | "week" | "day";
       const targets = sku ? inputs.filter((i) => i.sku === sku) : inputs.filter((i) => i.monthly).slice(0, 25);
       if (targets.length === 0) return json({ error: "not_found", message: "Ingen artikel med månadshistorik matchade." }, 404);
@@ -288,6 +361,7 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
         headers: {
           "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           "content-disposition": `attachment; filename="lagerradar-${id.slice(0, 8)}.xlsx"`,
+          "cache-control": "private, no-store",
         },
       });
     }
@@ -301,7 +375,7 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
         contactEmail: EMAILS.hello ?? undefined,
       });
       return new Response(pdf, {
-        headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="lagerrapport.pdf"` },
+        headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="lagerrapport.pdf"`, "cache-control": "private, no-store" },
       });
     }
 
@@ -310,10 +384,12 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
 
   /* -------------------------------------------------------- /copilot */
   if (segments[0] === "copilot" && ctx.req.method === "POST") {
+    if (!settingEnabled("copilot_enabled")) return json({ error: "copilot_disabled", message: "Copilot är tillfälligt avstängd." }, 503);
     const denied = requireScope(auth, "write");
     if (denied) return denied;
     const body = (await ctx.req.json().catch(() => ({}))) as { question?: string; analysisId?: string; conversation?: ConversationTurn[] };
     if (!body.question) return json({ error: "bad_request", message: "Fältet question krävs." }, 400);
+    if (body.question.length > 2000) return json({ error: "bad_request", message: "Fältet question får vara högst 2 000 tecken." }, 400);
     const id =
       body.analysisId ??
       (db.query("SELECT id FROM analyses WHERE org_id = $o AND status = 'ok' ORDER BY created_at DESC LIMIT 1").get({ $o: auth.orgId }) as { id: string } | null)?.id;
@@ -323,14 +399,15 @@ export async function handleApi(ctx: RequestContext): Promise<Response | null> {
 
     const inputs = rebuildInputs(found.result);
     const intel = buildIntelligence(inputs, found.result, { months: found.result.dataQuality.months });
-    const snapshots = db
-      .query("SELECT created_at AS date, json_extract(summary_json, '$.inventoryValue') AS value FROM analyses WHERE org_id = $o AND status = 'ok' AND summary_json IS NOT NULL ORDER BY created_at ASC LIMIT 24")
-      .all({ $o: auth.orgId }) as Array<{ date: string; value: number }>;
+    const snapshots = valueHistory(auth.orgId, null, 24);
 
+    const history = Array.isArray(body.conversation)
+      ? body.conversation.slice(-20).map((turn) => ({ question: String(turn.question ?? "").slice(0, 2000), intent: String(turn.intent ?? "unknown").slice(0, 80), params: {} }))
+      : [];
     const answer = ask(
       { result: found.result, intelligence: intel, items: inputs, company: orgName(auth.orgId), months: found.result.dataQuality.months, snapshots },
       body.question,
-      body.conversation ?? [],
+      history,
     );
     return json(answer);
   }

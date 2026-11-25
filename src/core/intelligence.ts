@@ -9,6 +9,8 @@
  */
 import type { AbcClass, AnalysisResult, AnalyzedItem, ItemAction } from "../analysis.ts";
 import type { ItemInput } from "../dataset.ts";
+import { DISPLAY, HEALTH, OTHER_CATEGORY_LABEL } from "../tuning.ts";
+import { classifyAbc } from "./classification.ts";
 
 export interface IntelligenceItem extends AnalyzedItem {
   unitMargin: number;
@@ -56,6 +58,10 @@ export interface IntelligenceSnapshot {
     cogs: number;
     grossProfit: number;
     marginPct: number;
+    /** Inventory at purchase cost (capital tied up). */
+    inventoryValue: number;
+    /** Inventory at selling price, not revenue until sold. */
+    stockSalesValue: number;
     negativeMarginCount: number;
     lowMarginCount: number;
     lowMarginValue: number;
@@ -64,12 +70,20 @@ export interface IntelligenceSnapshot {
   health: {
     score: number;
     grade: "utmärkt" | "god" | "svag" | "kritisk";
-    drivers: Array<{ label: string; value: number; score: number; weight: number }>;
+    /** `contribution` is score × weight in points, so the drivers sum to the score. */
+    drivers: Array<{ label: string; value: number; score: number; weight: number; contribution: number }>;
   };
   classification: {
+    /** The matrix is always ABC by sales revenue, the same class as the lists. */
+    abcMeasure: "revenue";
+    abcRevenue: Array<{ class: AbcClass; count: number; value: number; share: number }>;
     abcValue: Array<{ class: AbcClass; count: number; value: number; share: number }>;
     abcProfit: Array<{ class: AbcClass; count: number; value: number; share: number }>;
-    matrix: Array<{ abc: AbcClass; x: number; y: number; z: number; value: number }>;
+    matrix: Array<{ abc: AbcClass; x: number; y: number; z: number; unclassified: number; value: number }>;
+    /** Articles with no demand history: outside X/Y/Z by design, still in ABC. */
+    unclassified: number;
+    /** Why those articles have no X/Y/Z class. */
+    reasons: { noHistory: number; insufficientHistory: number; zeroDemand: number; missingValues: number };
   };
   velocity: {
     fast: number;
@@ -124,23 +138,6 @@ function stdev(xs: number[]): number {
   if (xs.length < 2) return 0;
   const m = mean(xs);
   return Math.sqrt(xs.reduce((a, v) => a + (v - m) ** 2, 0) / (xs.length - 1));
-}
-
-/** Ranks items into A/B/C by cumulative share of a chosen measure. */
-function classify(
-  items: Array<{ sku: string; measure: number }>,
-  thresholds: [number, number] = [0.8, 0.95],
-): Map<string, AbcClass> {
-  const total = items.reduce((a, i) => a + Math.max(0, i.measure), 0);
-  const sorted = [...items].sort((a, b) => b.measure - a.measure);
-  const out = new Map<string, AbcClass>();
-  let cumulative = 0;
-  for (const row of sorted) {
-    const cls: AbcClass = cumulative < thresholds[0] ? "A" : cumulative < thresholds[1] ? "B" : "C";
-    out.set(row.sku, cls);
-    cumulative += total > 0 ? Math.max(0, row.measure) / total : 0;
-  }
-  return out;
 }
 
 function groupBy(
@@ -209,10 +206,9 @@ export function buildIntelligence(
   const inventoryTotal = result.kpis.inventoryValue;
 
   const allAnalyzed = collectAll(result);
-  const valueRanking = classify(allAnalyzed.map((i) => ({ sku: i.sku, measure: i.value })), [0.8, 0.95]);
-  const profitRanking = classify(
+  const valueRanking = classifyAbc(allAnalyzed.map((i) => ({ sku: i.sku, measure: i.value })));
+  const profitRanking = classifyAbc(
     allAnalyzed.map((i) => ({ sku: i.sku, measure: Math.max(0, i.revenuePeriod - i.soldPeriod * i.cost) })),
-    [0.8, 0.95],
   );
 
   // Turns per item: annualised COGS over average inventory value held.
@@ -338,6 +334,7 @@ export function buildIntelligence(
   const revenue = items.reduce((a, i) => a + i.revenuePeriod, 0);
   const cogs = items.reduce((a, i) => a + i.soldPeriod * i.cost, 0);
   const grossProfit = revenue - cogs;
+  const stockSalesValue = items.reduce((a, i) => a + i.stock * (i.price ?? i.cost), 0);
 
   const lowMarginItems = items.filter((i) => i.marginPct !== null && i.marginPct < 15 && i.value > 0);
   const negativeMarginItems = items.filter((i) => i.profitPeriod < 0 && i.value > 0);
@@ -358,18 +355,34 @@ export function buildIntelligence(
   const deadShare = inventoryTotal > 0 ? result.kpis.deadStockValue / inventoryTotal : 0;
   const overShare = inventoryTotal > 0 ? result.kpis.overstockValue / inventoryTotal : 0;
   const stockoutShare = items.length > 0 ? result.kpis.stockoutRiskCount / items.length : 0;
-  const turnsTarget = 6;
-  const turnsScore = Math.min(1, result.kpis.turns / turnsTarget);
+  const turnsScore = Math.min(1, result.kpis.turns / HEALTH.turnsTarget);
 
   const drivers = [
-    { label: "Kapital i inaktiva artiklar", value: result.kpis.deadStockValue, score: Math.max(0, 1 - deadShare / 0.25), weight: 0.3 },
-    { label: "Överlager", value: result.kpis.overstockValue, score: Math.max(0, 1 - overShare / 0.4), weight: 0.25 },
-    { label: "Bristrisk", value: result.kpis.stockoutRiskCount, score: Math.max(0, 1 - stockoutShare / 0.15), weight: 0.2 },
-    { label: "Omsättningshastighet", value: result.kpis.turns, score: turnsScore, weight: 0.25 },
-  ];
-  const healthScore = Math.round(drivers.reduce((a, d) => a + d.score * d.weight, 0) * 100);
-  const grade =
-    healthScore >= 80 ? "utmärkt" : healthScore >= 60 ? "god" : healthScore >= 40 ? "svag" : "kritisk";
+    { label: "Kapital i inaktiva artiklar", value: result.kpis.deadStockValue, score: Math.max(0, 1 - deadShare / HEALTH.deadShareLimit), weight: HEALTH.weights.dead },
+    { label: "Överlager", value: result.kpis.overstockValue, score: Math.max(0, 1 - overShare / HEALTH.overShareLimit), weight: HEALTH.weights.over },
+    { label: "Bristrisk", value: result.kpis.stockoutRiskCount, score: Math.max(0, 1 - stockoutShare / HEALTH.stockoutShareLimit), weight: HEALTH.weights.stockout },
+    { label: "Omsättningshastighet", value: result.kpis.turns, score: turnsScore, weight: HEALTH.weights.turns },
+  ].map((d) => ({
+    ...d,
+    score: round(d.score, 3),
+    contribution: round(d.score * d.weight * 100, 1),
+  }));
+  // The displayed drivers are the source of truth: round each contribution to
+  // one decimal, sum those numbers, then put the rounding residual on the
+  // largest driver. That is why the four visible contributions always add up
+  // to the visible score instead of 82 vs 81.
+  const contributions = drivers.map((d) => round(d.score * d.weight * 100, 1));
+  const healthScore = Math.max(0, Math.min(100, Math.round(contributions.reduce((a, c) => a + c, 0))));
+  const residual = round(healthScore - contributions.reduce((a, c) => a + c, 0), 1);
+  if (residual !== 0) {
+    let largest = 0;
+    for (let i = 1; i < contributions.length; i++) {
+      if (contributions[i]! > contributions[largest]!) largest = i;
+    }
+    contributions[largest] = round(Math.max(0, contributions[largest]! + residual), 1);
+  }
+  const driversWithContribution = drivers.map((d, i) => ({ ...d, contribution: contributions[i]! }));
+  const grade = (HEALTH.grades.find((band) => healthScore >= band.min) ?? HEALTH.grades[HEALTH.grades.length - 1]!).grade;
 
   // ------------------------------------------------------------- anomalies
   const anomalies: IntelligenceSnapshot["anomalies"] = [];
@@ -438,6 +451,8 @@ export function buildIntelligence(
       cogs: round(cogs),
       grossProfit: round(grossProfit),
       marginPct: revenue > 0 ? round((grossProfit / revenue) * 100, 1) : 0,
+      inventoryValue: round(inventoryTotal),
+      stockSalesValue: round(stockSalesValue),
       negativeMarginCount: negativeMarginItems.length,
       lowMarginCount: lowMarginItems.length,
       lowMarginValue: round(lowMarginItems.reduce((a, i) => a + i.value, 0)),
@@ -449,19 +464,57 @@ export function buildIntelligence(
           marginPct: v.revenue > 0 ? round((v.profit / v.revenue) * 100, 1) : 0,
         }))
         .sort((a, b) => b.profit - a.profit)
-        .slice(0, 12),
+        // Keep the list complete: fold the tail into one explicit group so the
+        // category profits still add up to the gross profit shown on the card.
+        .reduce<Array<{ category: string; revenue: number; profit: number; marginPct: number }>>((acc, row, i) => {
+          if (i < DISPLAY.profitCategories) return [...acc, row];
+          const rest = acc.find((r) => r.category === OTHER_CATEGORY_LABEL);
+          if (!rest) {
+            return [...acc, { category: OTHER_CATEGORY_LABEL, revenue: row.revenue, profit: row.profit, marginPct: row.marginPct }];
+          }
+          rest.revenue = round(rest.revenue + row.revenue);
+          rest.profit = round(rest.profit + row.profit);
+          rest.marginPct = rest.revenue > 0 ? round((rest.profit / rest.revenue) * 100, 1) : 0;
+          return acc;
+        }, []),
     },
-    health: { score: healthScore, grade, drivers },
+    health: { score: healthScore, grade, drivers: driversWithContribution },
     classification: {
+      abcMeasure: "revenue",
+      abcRevenue: summarizeAbc(items, (i) => i.abcRevenue),
       abcValue: summarizeAbc(items, (i) => i.abcValue),
       abcProfit: summarizeAbc(items, (i) => i.abcProfit),
+      unclassified: items.filter((i) => i.xyz === null).length,
+      reasons: (() => {
+        const reasons = { noHistory: 0, insufficientHistory: 0, zeroDemand: 0, missingValues: 0 };
+        for (const item of items) {
+          if (item.xyz !== null) continue;
+          // Stored results from before the reason field fall back to the data
+          // they do have, so an old analysis is still explained correctly.
+          const reason =
+            (item as { xyzReason?: string }).xyzReason ??
+            (!item.monthlyDemand
+              ? "no_history"
+              : item.monthlyDemand.length < 6
+                ? "insufficient_history"
+                : "zero_demand");
+          if (reason === "insufficient_history") reasons.insufficientHistory++;
+          else if (reason === "zero_demand") reasons.zeroDemand++;
+          else if (reason === "missing_values") reasons.missingValues++;
+          else reasons.noHistory++;
+        }
+        return reasons;
+      })(),
       matrix: (["A", "B", "C"] as AbcClass[]).map((cls) => {
-        const rows = items.filter((i) => i.abcValue === cls);
+        // The dashboard matrix must count the same ABC class the article list
+        // filters on, which is the engine's revenue class.
+        const rows = items.filter((i) => i.abcRevenue === cls);
         return {
           abc: cls,
           x: rows.filter((i) => i.xyz === "X").length,
           y: rows.filter((i) => i.xyz === "Y").length,
           z: rows.filter((i) => i.xyz === "Z").length,
+          unclassified: rows.filter((i) => i.xyz === null).length,
           value: round(rows.reduce((a, i) => a + i.value, 0)),
         };
       }),
@@ -478,14 +531,16 @@ export function buildIntelligence(
     priorities,
     valueTrend: (options.snapshots ?? []).map((s) => ({ date: s.date, value: round(s.value) })),
     formulas: [
-      "ABC beräknas separat på försäljningsvärde, lagervärde och täckningsbidrag. Trösklar 80 % / 95 % av kumulativ andel.",
+      "ABC i matris, listor och filter = kumulativ andel av försäljningsvärdet under perioden. A: andelen före artikeln < 80 %, B: 80–95 %, C: resten. Artikeln som passerar en gräns stannar i klassen före den.",
+      "ABC på lagervärde och täckningsbidrag redovisas separat som abcValue och abcProfit; de styr inte matrisen.",
+      "XYZ = standardavvikelse / medelvärde för månadsefterfrågan med minst 6 månader: X < 0,5, Y 0,5–1,0, Z > 1,0. Medelvärde 0, saknade värden eller kortare historik ger ingen klass.",
       "Lageromsättning per artikel = (såld kvantitet / månader × 12 × inköpspris) / lagervärde.",
       "DIO = 365 / lageromsättning.",
       "Täckningsbidrag = försäljningsvärde − såld kvantitet × inköpspris.",
       "Säsongindex = medelvärde för kalendermånad / totalt medelvärde. Kräver minst 12 månader.",
       "Anomali = månad med |z| ≥ 2 mot artikelns egen historik.",
       "Prioritetspoäng = kapitalvikt (40) + åtgärdens allvar (30) + marginalpåverkan (20) + brådskande täckning (10).",
-      "Hälsopoäng = 0,30 × kapital i inaktiva artiklar + 0,25 × överlager + 0,20 × bristrisk + 0,25 × omsättning, skalad 0–100.",
+      "Hälsopoäng = summan av drivarnas bidrag (0,30 inaktivt kapital + 0,25 överlager + 0,20 bristrisk + 0,25 omsättning, skalat 0–100). Bidragen avrundas till en decimal och avrundningsdifferensen läggs på största drivaren, så delpoängen summerar exakt till totalen.",
     ],
   };
 }

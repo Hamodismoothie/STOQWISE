@@ -26,6 +26,8 @@ export interface ItemInput {
   cost: number;
   price: number | null;
   leadTimeDays: number | null;
+  /** Standard deviation of supplier lead time, in days, when the source provides it. */
+  leadTimeSigmaDays?: number | null;
   moq: number | null;
   /** Monthly sold quantity, oldest to newest. Null when only a total is available. */
   monthly: number[] | null;

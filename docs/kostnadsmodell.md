@@ -81,7 +81,10 @@ aggregerade nyckeltal. Gör inte det – det är både dyrare och sämre för GD
 | Enterprise | 14 900 kr/mån | Kedja eller industri, ≤500 000 artiklar, API och audit |
 
 Prova på-planen är gratis i 14 dagar (3 analyser, 5 000 artiklar) och kostar
-endast sin egen lagring. API ingår från Basic och uppåt.
+endast sin egen lagring. Efter 14 dagar går organisationen över till läsbart
+läge: data finns kvar och kan läsas och exporteras, men nya importer och analyser
+blockeras. Fyra livscykelmejl följer perioden; se `docs/drift.md`. API ingår från
+Basic och uppåt.
 
 **Jämförelsepunkter som gör priset försvarbart:**
 

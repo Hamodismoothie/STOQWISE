@@ -49,7 +49,9 @@ describe("procurement intelligence", () => {
       suggestedQty: 45,
       orderValue: 450,
       priority: "critical",
-      eoq: 600,
+      // Wilson with the product-wide assumptions: 350 kr per order and 22 %
+      // holding rate, the same figures stated on the article page.
+      eoq: Math.round(Math.sqrt((2 * 40 * 12 * 350) / (0.22 * 10))),
     });
     expect(view.totals.critical).toBe(1);
     expect(view.totals.suggestions).toBe(2);
@@ -92,5 +94,37 @@ describe("procurement intelligence", () => {
     expect(view.assumptions).toMatchObject({ orderCost: 500, holdingRate: 0.25, coverageDays: 45, missingLeadTime: 1 });
     expect(view.suggestions[0]!.suggestedQty).toBe(15);
     expect(view.assumptions.orderCost).toBe(500);
+  });
+});
+
+describe("procurement intelligence – fält och filtrering", () => {
+  const items = [
+    item({ sku: "M", supplier: "Leverantör A", stock: 20, available: 15, reorderPoint: 40, avgMonthlyDemand: 30, leadTimeDays: 30, cost: 10, moq: 12, coverDays: 5 }),
+    item({ sku: "N", supplier: "Leverantör B", stock: 100, available: 100, reorderPoint: 20, avgMonthlyDemand: 1, coverDays: 400 }),
+  ];
+
+  test("förväntad efterfrågan, MOQ, saldo efter leverans och bristrisk redovisas", () => {
+    const view = buildProcurementView(items, { orderCost: 350, holdingRate: 0.22, coverageDays: 30 });
+    const s = view.suggestions.find((x) => x.sku === "M")!;
+    expect(s.moq).toBe(12);
+    expect(s.expectedDemand).toBeCloseTo(30 * (30 / 30.44), 1);
+    expect(s.suggestedQty).toBe(36); // 30 enheter täckning avrundat uppåt till MOQ 12
+    expect(s.stockAfter).toBeCloseTo(15 + 36 - s.expectedDemand, 1);
+    expect(s.stockoutProbability).toBeNull(); // ingen månadshistorik i det här fallet
+    expect(s.eoq).toBe(338); // sqrt(2 × 360 × 350 / (10 × 0,22))
+  });
+
+  test("leverantörsfiltret begränsar förslagen men behåller hela leverantörslistan", () => {
+    const view = buildProcurementView(items, { supplier: "Leverantör B" });
+    expect(view.suggestions).toHaveLength(0);
+    expect(view.filter.supplier).toBe("Leverantör B");
+    expect(view.filter.suppliers).toEqual(["Leverantör A", "Leverantör B"]);
+    expect(view.filter.groupBySupplier).toBe(false);
+  });
+
+  test("gruppering per leverantör bevaras i vyn", () => {
+    const view = buildProcurementView(items, { groupBySupplier: true });
+    expect(view.filter.groupBySupplier).toBe(true);
+    expect(view.suggestions.map((s) => s.sku)).toEqual(["M"]);
   });
 });

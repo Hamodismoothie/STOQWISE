@@ -6,18 +6,19 @@ annars kräver en controller och en konsult: **var sitter kapitalet, vad kommer
 att hända, vad händer om vi ändrar oss, och vad ska vi göra på måndag.**
 
 **Status:** fungerande plattform, testad end-to-end. `bun run typecheck` grönt,
-**123 automatiska tester** (motor, prognos, simulering, copilot, Excel, RBAC,
-API, tenant-isolering och ett riktigt HTTP-flöde), ett enda runtime-beroende
-(`pdfkit`). Mätt: 3 ms per analys på 380 artiklar, 87 ms på 50 000.
+**378 automatiska tester** (motor, prognos, simulering, copilot, Excel, RBAC,
+API, tenant-isolering, licensgrind och ett riktigt HTTP-flöde), två
+runtime-beroenden (`three`, `pdfkit`). Mätt: 1,5 ms för demokörningen (46
+artiklar), 83 ms på 50 000.
 
 ---
 
 ## Design
 
 Gränssnittet är en **lagerbok**: varmt papper, bläck och oxiderad koppar, hårlinjer
-i stället för kort, folionummer i navigationen och siffror satta i mono. Fyra
-OFL-licensierade typsnitt bär identiteten — Newsreader (display och editorial),
-Schibsted Grotesk (gränssnitt) och Geist Mono (data). Logotypen är den
+i stället för kort, folionummer i navigationen och siffror satta i mono. Tre
+OFL-licensierade typsnitt bär identiteten: Geist (gränssnitt), Geist Mono
+(data) och Newsreader (kursiv serif i PDF). Logotypen är den
 Stoqwise-konsten (`public/brand/`, SVG med ordmärket anpassat till namnet) och används som bild i
 varje yta: rail, sidhuvud, auth, favicon och PDF (som vektor). Inget UI-bibliotek, inga
 runtime-beroenden för ytan: designsystemet ligger i `public/v3.css`, logotyp och
@@ -37,8 +38,10 @@ säsongsmönster och anomalier. Varje artikel får en åtgärd: `write_off`,
 `liquidate`, `reduce`, `reorder` eller `ok` – med belopp och motivering.
 
 ### 2. Predictive Analytics
-Fem prognosmodeller (SES, Holt, Holt-Winters, Croston, SBA) väljs per artikel
-genom backtest på WAPE, med MAE, RMSE och bias redovisade. Konfidensintervall,
+Sju prognosmodeller (SES, Holt, Holt-Winters, Croston, SBA, TSB och ADIDA)
+väljs per artikel genom ett läckagefritt backtest på WAPE, med MAE, RMSE och
+bias redovisade. En champion-challenger-grind behåller SES när en komplex
+modell inte bevisar sig på en längre holdout. Konfidensintervall,
 vecko- och dagsfrekvens, ledtidsbehov och beställningspunkt ur efterfrågans
 standardavvikelse och vald servicenivå.
 
@@ -84,10 +87,11 @@ och `/exempelrapport.pdf` kräver inget konto.
 |---|---|
 | `bun run dev` | Startar med hot reload |
 | `bun start` | Startar utan watch |
-| `bun test` | 123 tester: parser, motor, prognos, simulering, copilot, xlsx, RBAC, API, E2E |
+| `bun test` | 378 tester: parser, motor, prognos, simulering, copilot, xlsx, RBAC, API, licenser, E2E |
 | `bun run typecheck` | `tsc --noEmit`, strict |
 | `bun run sample` | Genererar exempel-CSV och exempel-PDF |
 | `bun run bench` | Prestandamätning |
+| `bun run forecast:bench` | Prognosbenchmark mot SES och naiv prognos |
 
 ---
 
@@ -96,7 +100,7 @@ och `/exempelrapport.pdf` kräver inget konto.
 ```
 src/
   core/          forecast.ts · simulate.ts · intelligence.ts · copilot.ts
-  data/          migrate.ts (5 versioner) · repo.ts (all SQL, roller, planer)
+  data/          migrate.ts (8 versioner) · repo.ts (all SQL, roller, planer)
   pages/         public.ts · core.ts · admin.ts
   ui/            base.ts (designsystem) · charts.ts (SVG)
   server.ts      routing, sessioner, formulär, nedladdningar
@@ -123,6 +127,12 @@ diagramanimationerna kräver det. Se `docs/arkitektur.md` för varför.
 | Radar Multi | 4 900 kr | 50 000 | 10 | 50 | ✓ |
 | Enterprise | 14 900 kr | 500 000 | 100 | 500 | ✓ |
 
+Prova på gäller i 14 dagar från att arbetsytan skapas. När provperioden tar slut
+går organisationen över till läsbart läge: analyser, artikelrader, scenarier och
+rapporter finns kvar och kan läsas och exporteras, men nya importer, analyser och
+andra ändringar av kunddata blockeras. Fyra livscykelmejl följer perioden; de och
+det läsbara läget beskrivs i `docs/drift.md`.
+
 Kostnads- och prismodellens antaganden finns i `docs/kostnadsmodell.md`.
 
 ---
@@ -138,14 +148,22 @@ Fullständig referens: `docs/api.md`. Databasschema och migreringar:
 `docs/databas.md`. Säkerhet, roller och GDPR: `docs/sakerhet.md`. Drift, backup
 och kapacitet: `docs/drift.md`.
 
+Kunskapsgrund, formler, källor och regler för realistisk testdata:
+`docs/kunskapsgrund.md`.
+
+Teknikinventering, licensbedömning och mätresultat: `docs/teknikval.md`.
+Tredjepartsregister: `THIRD_PARTY_LICENSES.md`.
+
 ---
 
 ## Vad som kräver extern aktivering
 
 Byggt och testat internt, men kräver att ägaren sätter en nyckel:
 
-- **LLM-omskrivning av copilotsvar** – `AI_API_KEY`. Utan den används den
-  deterministiska motorn, som är fullt fungerande.
+- **LLM-omskrivning av copilotsvar** – kräver både `AI_API_KEY` och
+  `AI_DATA_PROCESSING_APPROVED=true`. Utan dem används den deterministiska
+  motorn, som är fullt fungerande. En nyckel ensam är aldrig samtycke till
+  extern databehandling.
 - **Betalningar** – `STRIPE_SECRET_KEY`. Abonnemang kan sättas manuellt.
 - **E-postutskick** – kräver leverantörsnyckel; inbjudningar visas som länk.
 - **ERP-synk** – kräver kundens egna API-uppgifter per system.

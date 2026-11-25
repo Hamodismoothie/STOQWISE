@@ -330,6 +330,151 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 7,
+    name: "administration: CMS fields, versions and admin accounts",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS admin_users (
+          id TEXT PRIMARY KEY,
+          email TEXT NOT NULL UNIQUE,
+          password_hash TEXT NOT NULL,
+          name TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'owner',
+          totp_secret TEXT,
+          totp_enabled INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          last_login_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS admin_sessions (
+          token_hash TEXT PRIMARY KEY,
+          admin_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+          expires_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          ip TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS cms_fields (
+          scope TEXT NOT NULL,
+          key TEXT NOT NULL,
+          locale TEXT NOT NULL,
+          draft TEXT,
+          published TEXT,
+          updated_at TEXT NOT NULL,
+          updated_by TEXT,
+          PRIMARY KEY (scope, key, locale)
+        );
+
+        CREATE TABLE IF NOT EXISTS cms_versions (
+          id TEXT PRIMARY KEY,
+          scope TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          author TEXT,
+          note TEXT,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cms_versions_scope_version
+          ON cms_versions(scope, version);
+
+        CREATE TABLE IF NOT EXISTS admin_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          admin_id TEXT,
+          action TEXT NOT NULL,
+          target TEXT,
+          meta_json TEXT,
+          ip TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_admin_audit_recent ON admin_audit(id DESC);
+      `);
+    },
+  },
+  {
+    version: 8,
+    name: "platform administration: account status, test tenants, limits and settings",
+    up: (db) => {
+      addColumn(db, "users", "status TEXT NOT NULL DEFAULT 'active'");
+      addColumn(db, "organizations", "kind TEXT NOT NULL DEFAULT 'customer'");
+      addColumn(db, "organizations", "status TEXT NOT NULL DEFAULT 'active'");
+      addColumn(db, "organizations", "limits_json TEXT");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS platform_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          updated_by TEXT
+        );
+      `      );
+    },
+  },
+  {
+    version: 9,
+    name: "password reset tokens and transactional mail log",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS password_resets (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at TEXT NOT NULL,
+          used_at TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
+
+        CREATE TABLE IF NOT EXISTS mail_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          to_email TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          provider_id TEXT,
+          error TEXT,
+          body TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mail_log_recent ON mail_log(id DESC);
+      `);
+    },
+  },
+  {
+    version: 10,
+    name: "invitation locale so mail and page share the inviter's language",
+    up: (db) => {
+      // Pending invitations were mailed in Swedish before this column existed,
+      // so Swedish is the honest default for those links.
+      addColumn(db, "invitations", "locale TEXT NOT NULL DEFAULT 'sv'");
+    },
+  },
+  {
+    version: 11,
+    name: "trial lifecycle: fixed end date and idempotent mail markers",
+    up: (db) => {
+      addColumn(db, "organizations", "trial_welcome_sent_at TEXT");
+      addColumn(db, "organizations", "trial_midpoint_sent_at TEXT");
+      addColumn(db, "organizations", "trial_ending_sent_at TEXT");
+      addColumn(db, "organizations", "trial_ended_sent_at TEXT");
+      // A trial without an end is not a trial, it is an indefinite free plan.
+      // Existing rows get the same fourteen days from their creation date.
+      db.exec(`
+        UPDATE organizations
+        SET trial_ends_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at, '+14 days')
+        WHERE trial_ends_at IS NULL
+      `);
+    },
+  },
+  {
+    version: 12,
+    name: "user and organisation locale",
+    up: (db) => {
+      // Existing accounts saw Swedish product copy and received Swedish mail
+      // before a stored locale existed, so Swedish is the honest upgrade value.
+      addColumn(db, "users", "locale TEXT NOT NULL DEFAULT 'sv'");
+      addColumn(db, "organizations", "locale TEXT NOT NULL DEFAULT 'sv'");
+    },
+  },
 ];
 
 export function migrate(db: Database): { from: number; to: number; applied: string[] } {
