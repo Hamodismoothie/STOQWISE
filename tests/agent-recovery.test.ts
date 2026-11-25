@@ -190,6 +190,15 @@ describe("reservstrategier", () => {
 
   test("reservmodellen används först när den har svarat", () => {
     const current = "tencent/hy4-flash:free";
+    // AGENT_CLI läses vid import och ärvs från den agent som kör sviten. Med
+    // Claude-backend finns ingen modellstege: samma modell behålls och ingen
+    // modell provas.
+    if (process.env.AGENT_CLI === "claude") {
+      let probed = 0;
+      expect(nextModel(current, () => (probed++, true))).toBe(current);
+      expect(probed).toBe(0);
+      return;
+    }
     // En modell som svarar väljs; en som inte svarar får aldrig ett försök.
     expect(nextModel(current, (model) => model === "upstage/solar-mini4:free")).toBe("upstage/solar-mini4:free");
     expect(nextModel(current, () => false)).toBe(current);

@@ -94,7 +94,7 @@ async function smoke(): Promise<StepResult> {
       checks.push("servern svarade inte på /halsa inom 25 s");
     }
 
-    for (const path of up ? ["/halsa", "/", "/om-oss", "/priser", "/produkt", "/kontakt", "/robots.txt", "/sitemap.xml"] : []) {
+    for (const path of up ? ["/halsa", "/api/v1/health", "/", "/om-oss", "/priser", "/produkt", "/kontakt", "/robots.txt", "/sitemap.xml"] : []) {
       const res = await fetch(`${base}${path}`);
       checks.push(`${path}=${res.status}`);
       if (res.status !== 200) {
