@@ -2994,11 +2994,16 @@ const STATIC: Record<string, string> = {
 
 async function serveStatic(path: string, acceptEncoding = ""): Promise<Response | null> {
   const wantsGzip = acceptEncoding.includes("gzip");
-  // The simulation engine is the same TypeScript module the server and tests
-  // use. It is transpiled on request so browser playback cannot drift from the
-  // tested model and there is no second implementation to maintain.
-  if (path === "/world/sim-engine.js") {
-    const source = await Bun.file(join(import.meta.dir, "ui", "live-simulation.ts")).text();
+  // Samma TypeScript-moduler som servern och testerna använder transpileras vid
+  // förfrågan, så att browsern inte kan driva ifrån den testade logiken och
+  // ingen andra implementering behöver underhållas.
+  const transpiledModules: Record<string, string> = {
+    "/world/sim-engine.js": "ui/live-simulation.ts",
+    "/perf.js": "ui/perf.ts",
+  };
+  const transpiledSource = transpiledModules[path];
+  if (transpiledSource) {
+    const source = await Bun.file(join(import.meta.dir, transpiledSource)).text();
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
     return jsResponse(path, new TextEncoder().encode(js), "no-store", wantsGzip);
   }

@@ -19,6 +19,13 @@ import {
 } from "../src/ui/perf.ts";
 
 const CSS = readFileSync(new URL("../public/v3.css", import.meta.url), "utf8");
+const SERVER = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+
+/** Båda renderarna ska dela samma DPR-beräkning som testas här ovan. */
+const RENDERERS = ["app-world", "warehouse"].map((name) => ({
+  name,
+  source: readFileSync(new URL(`../public/world/${name}.js`, import.meta.url), "utf8"),
+}));
 
 describe("rörelsetokens", () => {
   test("durations är 120/240/480/800 ms", () => {
@@ -94,6 +101,16 @@ describe("rörelsepreferens", () => {
 });
 
 describe("prestandabudget", () => {
+  test("båda renderarna hämtar DPR från den serverade perf-modulen", () => {
+    expect(SERVER).toContain('"/perf.js": "ui/perf.ts"');
+    for (const { name, source } of RENDERERS) {
+      expect(source, name).toContain('import { effectiveDpr } from "/perf.js";');
+      expect(source, name).toContain("effectiveDpr(");
+      // Full kvalitet är startvärdet i båda renderlooparna.
+      expect(source, name).toContain("let quality = 2;");
+    }
+  });
+
   test("DPR kapas per enhetsklass", () => {
     expect(clampDpr(3, false)).toBe(PERF.dprCapDesktop);
     expect(clampDpr(3, true)).toBe(PERF.dprCapMobile);

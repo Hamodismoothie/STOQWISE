@@ -12,6 +12,7 @@
  * or scrolled out of view, and the renderer caps the pixel ratio.
  */
 import * as THREE from "/vendor/three/three.module.js";
+import { effectiveDpr } from "/perf.js";
 import { cardboardTexture, woodTexture } from "/world/textures.js";
 import {
   LOAD_HEIGHT,
@@ -1560,9 +1561,11 @@ export function createAppWorld({
   let frameCount = 0;
   let frameWindowStart = performance.now();
   let fps = 0;
-  let qualityBase = 1;
-  let qualityScale = 0;
+  // Full kvalitet (nivå 2 i perf.ts) är startvärdet. Både kap och nivåskala
+  // kommer från den testade hjälparen, inte från lokala uttryck här.
+  let quality = 2;
   let lastQualityChange = 0;
+  const pixelRatio = () => effectiveDpr(quality, window.devicePixelRatio || 1, window.innerWidth < 760);
 
   const observer = new IntersectionObserver(
     (entries) => {
@@ -1657,16 +1660,16 @@ export function createAppWorld({
       fps = Math.round((frameCount * 1000) / fpsElapsed);
       frameCount = 0;
       frameWindowStart = now;
-      // Keep interaction above 30 fps on software/weak GPUs by trading a little
-      // internal resolution in aggregate views. It recovers when headroom exists.
+      // Långsamma frames sänker kvalitetsnivån ett steg, återhämtning höjer den
+      // till full nivå igen. Nivåerna och DPR-skalan definieras i perf.ts.
       if ((blocks.length || slots.length) && !reduced && now - lastQualityChange > 1500) {
-        if (fps < 30 && qualityScale > 0.55) {
-          qualityScale = Math.max(0.55, qualityScale - 0.07);
-          renderer.setPixelRatio(Math.min(qualityBase, qualityScale));
+        if (fps < 30 && quality > 0) {
+          quality -= 1;
+          renderer.setPixelRatio(pixelRatio());
           lastQualityChange = now;
-        } else if (fps > 54 && qualityScale < qualityBase) {
-          qualityScale = Math.min(qualityBase, qualityScale + 0.04);
-          renderer.setPixelRatio(Math.min(qualityBase, qualityScale));
+        } else if (fps > 54 && quality < 2) {
+          quality += 1;
+          renderer.setPixelRatio(pixelRatio());
           lastQualityChange = now;
         }
       }
@@ -1679,15 +1682,8 @@ export function createAppWorld({
     const rect = stage.getBoundingClientRect();
     const width = Math.max(1, Math.round(rect.width));
     const height = Math.max(1, Math.round(rect.height));
-    const cap = window.innerWidth < 760 ? 1.4 : 1.8;
-    // Adaptive resolution: a 500k overview is an intentional aggregate view,
-    // so render slightly below CSS resolution instead of dropping frames.
-    const softwareScale = softwareGl ? 0.8 : 1;
-    const aggregateScale = blocks.length > 800 ? 0.72 : blocks.length > 0 ? 0.85 : 1;
-    qualityBase = Math.min(cap, Math.max(0.55, (window.devicePixelRatio || 1) * softwareScale * aggregateScale));
-    if (!qualityScale) qualityScale = qualityBase;
-    qualityScale = Math.min(qualityScale, qualityBase);
-    renderer.setPixelRatio(qualityScale);
+    // Upplösningen bestäms av perf.ts utifrån enhetsklass och kvalitetsnivå.
+    renderer.setPixelRatio(pixelRatio());
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();

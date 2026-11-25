@@ -18,6 +18,7 @@
  * `/api/v1/demo/what-if`, which runs the real analysis engine.
  */
 import * as THREE from "/vendor/three/three.module.js";
+import { effectiveDpr } from "/perf.js";
 import { knockedCones, stepTruck } from "/world/arcade.js";
 import { cardboardTexture, woodTexture } from "/world/textures.js";
 import {
@@ -1054,7 +1055,7 @@ export function createWorld({ root, canvas, data, locale = "sv", onStats }) {
     const rect = canvas.getBoundingClientRect();
     const width = Math.max(1, Math.round(rect.width));
     const height = Math.max(1, Math.round(rect.height));
-    const dpr = Math.min(coarse ? 1.25 : 1.5, Math.max(1, window.devicePixelRatio || 1)) * dprLevel;
+    const dpr = effectiveDpr(quality, window.devicePixelRatio || 1, coarse);
     renderer.setPixelRatio(dpr);
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
@@ -1062,7 +1063,9 @@ export function createWorld({ root, canvas, data, locale = "sv", onStats }) {
     stats.dpr = dpr;
   }
 
-  let dprLevel = 1;
+  // Full kvalitet (nivå 2 i perf.ts) är startvärdet; dprLevel 1 motsvarade
+  // samma upplösning innan beräkningen flyttades till effectiveDpr.
+  let quality = 2;
   let last = performance.now();
   let frameCount = 0;
   let frameTimeSum = 0;
@@ -1186,11 +1189,12 @@ export function createWorld({ root, canvas, data, locale = "sv", onStats }) {
       fps = Math.round(1000 / (frameTimeSum / 30));
       frameTimeSum = 0;
       stats.fps = fps;
-      if (fps < 45 && dprLevel > 0.75) {
-        dprLevel = 0.75;
+      // Kvalitetsnivån och DPR-skalan kommer från perf.ts; nivå 2 är full upplösning.
+      if (fps < 45 && quality > 0) {
+        quality -= 1;
         resize();
-      } else if (fps > 56 && dprLevel < 1) {
-        dprLevel = 1;
+      } else if (fps > 56 && quality < 2) {
+        quality += 1;
         resize();
       }
     }
