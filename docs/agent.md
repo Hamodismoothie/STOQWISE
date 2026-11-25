@@ -80,9 +80,30 @@ hälsan per backend sparas i `data/agent/backends.json`. Ett svar klassas som
 - är alla backends i cooldown väntar cykeln (`väntar på kvot: …`) utan att välja
   uppgift, så en slut kvot kostar kön ingenting.
 
-Varje körning skriver en rad i `data/agent/usage.jsonl` med backend, tokens
-(in/ut/cache) och `total_cost_usd` — förbrukningen mäts i stället för gissas.
-`AGENT_DAILY_MAX` (6) räknar modellkörningar per dygn i `state.json`.
+### Tidsgräns är inte ett avbrott
+
+Bun dödar en agent som spränger sin `timeout` med SIGTERM, och det registreras som
+exit 143 — samma kod som en extern signal. Motorn skiljer dem åt genom att mäta
+tiden (`ranOutOfTime`): en körning som tar slut först vid gränsen är ett
+**misslyckat försök** och går vidare i strategistegen, medan en signal mitt i
+körningen lämnar uppgiften orörd. Utan den skillnaden upprepas en uppgift som
+aldrig hinner bli klar i oändlighet — det var d3-06:s 720-sekundersloop.
+
+### Kvittologi: tre sorters pengar
+
+Varje körning skriver en rad i `data/agent/usage.jsonl` (`buildReceipt`):
+
+| Fält | Betyder |
+|---|---|
+| `tokens` (in/ut/cache) | förbrukning i prenumerationens kvotfönster |
+| `billing` | `subscription`, `api` eller `unknown` — avgörs av om `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` finns |
+| `actualCostUsd` | **verklig extra kostnad**: 0 i prenumerationsläge, annars CLI:ts `total_cost_usd` |
+| `apiEquivalentUsd` | vad samma tokens skulle kosta på API:t (endast Claude rapporterar den) |
+
+`bun scripts/dev-agent.ts --usage` summerar per backend: körningar, output-tokens,
+faktisk extra kostnad och API-motsvarighet — siffrorna hålls åtskilda i stället för
+att slås ihop till ett "värde". `AGENT_DAILY_MAX` (6) räknar modellkörningar per
+dygn i `state.json`.
 
 ## Grindar och säkerhet
 

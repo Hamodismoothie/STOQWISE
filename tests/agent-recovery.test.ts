@@ -15,6 +15,10 @@ import {
   allowed,
   applyFault,
   applySuccess,
+  billingFor,
+  buildReceipt,
+  ranOutOfTime,
+  summarizeUsage,
   classifyBackendOutput,
   describeCooling,
   nextCooldownMinutes,
@@ -418,5 +422,64 @@ describe("Z0: kvotmedvetenhet", () => {
     });
     expect(parseAgentOutput("vanligt svar utan kvitto")).toEqual({ text: "vanligt svar utan kvitto", usage: null });
     expect(parseAgentOutput("{ trasig json")).toEqual({ text: "{ trasig json", usage: null });
+  });
+});
+
+describe("Z0: kvittot skiljer kostnad, förbrukning och API-motsvarighet", () => {
+  const usage = { input: 10, output: 1_000, cacheRead: 5_000, cacheWrite: 200, costUsd: 0.5 };
+  const base = { at: "2026-11-25T19:00:00.000Z", task: "d3-06", seconds: 12, exit: 0, fault: null };
+
+  test("prenumeration kostar 0 kr men redovisar API-motsvarigheten", () => {
+    const receipt = buildReceipt({ ...base, backend: "claude", usage, env: {} });
+    expect(receipt.billing).toBe("subscription");
+    expect(receipt.actualCostUsd).toBe(0);
+    expect(receipt.apiEquivalentUsd).toBe(0.5);
+    expect(receipt.tokens).toEqual({ input: 10, output: 1_000, cacheRead: 5_000, cacheWrite: 200 });
+  });
+
+  test("en API-nyckel gör samma tokens till en faktisk kostnad", () => {
+    const receipt = buildReceipt({ ...base, backend: "claude", usage, env: { ANTHROPIC_API_KEY: "satt" } });
+    expect(receipt.billing).toBe("api");
+    expect(receipt.actualCostUsd).toBe(0.5);
+    expect(receipt.apiEquivalentUsd).toBe(0.5);
+  });
+
+  test("Codex utan prisuppgift lämnar API-motsvarigheten okänd i stället för noll", () => {
+    const receipt = buildReceipt({ ...base, backend: "codex", usage: null, env: {} });
+    expect(receipt.billing).toBe("subscription");
+    expect(receipt.actualCostUsd).toBe(0);
+    expect(receipt.apiEquivalentUsd).toBeNull();
+    expect(receipt.tokens).toBeNull();
+  });
+
+  test("billingFor gissar aldrig: okänd backend ger unknown", () => {
+    expect(billingFor(null, {})).toBe("unknown");
+    expect(billingFor("codex", { OPENAI_API_KEY: "satt" })).toBe("api");
+    expect(billingFor("codex", {})).toBe("subscription");
+  });
+
+  test("summan håller isär pengar, tokens och saknade prisuppgifter", () => {
+    const paid = buildReceipt({ ...base, backend: "claude", usage, env: { ANTHROPIC_API_KEY: "satt" } });
+    const free = buildReceipt({ ...base, backend: "claude", usage, env: {} });
+    const unknown = buildReceipt({ ...base, backend: "codex", usage: null, env: {} });
+    const summary = summarizeUsage([paid, free, unknown]);
+    expect(summary.claude).toMatchObject({ runs: 2, actualCostUsd: 0.5, apiEquivalentUsd: 1, unknownEquivalentRuns: 0 });
+    expect(summary.claude?.tokens.output).toBe(2_000);
+    expect(summary.codex).toMatchObject({ runs: 1, actualCostUsd: 0, apiEquivalentUsd: 0, unknownEquivalentRuns: 1 });
+  });
+});
+
+describe("Z0: tidsgräns är ett misslyckat försök, inte en extern signal", () => {
+  test("720 s mot en 720 s gräns räknas som tidsgräns", () => {
+    expect(ranOutOfTime(143, 720_500, 720_000)).toBe(true);
+  });
+
+  test("143 efter 124 s är fortfarande en extern signal", () => {
+    expect(ranOutOfTime(143, 124_500, 720_000)).toBe(false);
+  });
+
+  test("exit 0 och saknad utdata räknas aldrig som tidsgräns utan tid", () => {
+    expect(ranOutOfTime(0, 720_500, 720_000)).toBe(false);
+    expect(ranOutOfTime(null, 12_000, 720_000)).toBe(false);
   });
 });

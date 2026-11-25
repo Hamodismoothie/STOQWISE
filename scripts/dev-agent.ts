@@ -310,8 +310,139 @@ export function parseAgentOutput(raw: string): { text: string; usage: Usage | nu
   return { text: raw, usage: null };
 }
 
+export type Billing = "subscription" | "api" | "unknown";
+
+/**
+ * Kvittot håller isär tre olika sorters pengar som annars blandas ihop:
+ *
+ * - `actualCostUsd`    — verklig extra kostnad, det som faktiskt debiteras.
+ * - `tokens`           — förbrukning i prenumerationens kvotfönster.
+ * - `apiEquivalentUsd` — vad samma tokens skulle kosta på API:t (CLI:ts egen siffra).
+ *
+ * En prenumeration debiterar 0 kr per token men förbrukar kvot; ett API-nyckelläge
+ * debiterar exakt API-motsvarigheten. Siffrorna får aldrig ersätta varandra.
+ */
+export type Receipt = {
+  at: string;
+  task: string;
+  backend: BackendId | null;
+  seconds: number;
+  exit: number | null;
+  fault: string | null;
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
+  billing: Billing;
+  actualCostUsd: number | null;
+  apiEquivalentUsd: number | null;
+};
+
+/** Vilket betalsätt backenden faktiskt använder just nu. */
+export function billingFor(backend: BackendId | null, env: Record<string, string | undefined> = process.env): Billing {
+  if (backend === "claude") return env.ANTHROPIC_API_KEY ? "api" : "subscription";
+  if (backend === "codex") return env.OPENAI_API_KEY ? "api" : "subscription";
+  return "unknown";
+}
+
+export function buildReceipt(input: {
+  at: string;
+  task: string;
+  backend: BackendId | null;
+  seconds: number;
+  exit: number | null;
+  fault: string | null;
+  usage: Usage | null;
+  env?: Record<string, string | undefined>;
+}): Receipt {
+  const billing = billingFor(input.backend, input.env ?? process.env);
+  const apiEquivalentUsd = input.usage?.costUsd ?? null;
+  return {
+    at: input.at,
+    task: input.task,
+    backend: input.backend,
+    seconds: input.seconds,
+    exit: input.exit,
+    fault: input.fault,
+    tokens: input.usage
+      ? { input: input.usage.input, output: input.usage.output, cacheRead: input.usage.cacheRead, cacheWrite: input.usage.cacheWrite }
+      : null,
+    billing,
+    actualCostUsd: billing === "api" ? apiEquivalentUsd : billing === "subscription" ? 0 : null,
+    apiEquivalentUsd,
+  };
+}
+
+export type UsageSummary = {
+  runs: number;
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  actualCostUsd: number;
+  apiEquivalentUsd: number;
+  unknownEquivalentRuns: number;
+};
+
+export function summarizeUsage(entries: Receipt[]): Record<string, UsageSummary> {
+  const out: Record<string, UsageSummary> = {};
+  for (const entry of entries) {
+    const key = entry.backend ?? "okänd";
+    const stat = (out[key] ??= {
+      runs: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      actualCostUsd: 0,
+      apiEquivalentUsd: 0,
+      unknownEquivalentRuns: 0,
+    });
+    stat.runs += 1;
+    if (entry.tokens) {
+      stat.tokens.input += Number(entry.tokens.input ?? 0);
+      stat.tokens.output += Number(entry.tokens.output ?? 0);
+      stat.tokens.cacheRead += Number(entry.tokens.cacheRead ?? 0);
+      stat.tokens.cacheWrite += Number(entry.tokens.cacheWrite ?? 0);
+    }
+    if (typeof entry.actualCostUsd === "number") stat.actualCostUsd += entry.actualCostUsd;
+    if (typeof entry.apiEquivalentUsd === "number") stat.apiEquivalentUsd += entry.apiEquivalentUsd;
+    else stat.unknownEquivalentRuns += 1;
+  }
+  return out;
+}
+
+export function usageReport(entries: Receipt[]): string {
+  const summary = summarizeUsage(entries);
+  const rows = Object.entries(summary).map(([backend, stat]) => {
+    const unknown = stat.unknownEquivalentRuns > 0 ? `, ${stat.unknownEquivalentRuns} utan prisuppgift` : "";
+    return (
+      `${backend}: ${stat.runs} körningar · ${stat.tokens.output} output-tokens · ` +
+      `faktisk extra kostnad ${stat.actualCostUsd.toFixed(4)} USD · ` +
+      `API-motsvarighet ${stat.apiEquivalentUsd.toFixed(4)} USD${unknown}`
+    );
+  });
+  return rows.length > 0 ? rows.join("\n") : "Inga agentkörningar är bokförda ännu.";
+}
+
+export function readUsage(): Receipt[] {
+  try {
+    return readFileSync(USAGE_FILE, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const parsed = JSON.parse(line) as Receipt & { usage?: Usage | null };
+        if (parsed.tokens || !("usage" in parsed)) return parsed;
+        // Rader före Z0-verifieringen bar `usage` i stället för `tokens`; de räknas
+        // om med samma regler så att historiken och nya rader betyder samma sak.
+        return buildReceipt({
+          at: parsed.at,
+          task: parsed.task,
+          backend: parsed.backend,
+          seconds: parsed.seconds,
+          exit: parsed.exit,
+          fault: parsed.fault ?? null,
+          usage: parsed.usage ?? null,
+        });
+      });
+  } catch {
+    return [];
+  }
+}
+
 /** One line per agent call, so quota use is measured instead of guessed. */
-export function appendUsage(entry: Record<string, unknown>): void {
+export function appendUsage(entry: Receipt): void {
   try {
     mkdirSync(STATE_DIR, { recursive: true });
     appendFileSync(USAGE_FILE, `${JSON.stringify(entry)}\n`);
@@ -1234,6 +1365,7 @@ Svara med en numrerad markdown-lista och inget annat.`;
       env: { ...process.env, PATH: `${join(homedir(), ".local", "bin")}:${process.env.PATH ?? ""}` },
       stdout: "pipe",
       stderr: "pipe",
+      stdin: "ignore",
       timeout: 420_000,
     });
   } catch (error) {
@@ -1366,6 +1498,15 @@ type AgentRun = {
   usage: Usage | null;
 };
 
+/**
+ * Bun dödar ett barn som spränger `timeout` med SIGTERM, vilket registreras som
+ * exit 143 — samma kod som en extern signal. Bara tiden kan skilja dem åt.
+ */
+export function ranOutOfTime(exitCode: number | null, elapsedMs: number, timeoutMs: number): boolean {
+  if (exitCode === 0) return false;
+  return elapsedMs >= timeoutMs - 2_000;
+}
+
 function faultLabel(fault: BackendFault): string {
   if (fault === "quota") return "kvoten är slut";
   if (fault === "auth") return "inloggningen fungerar inte";
@@ -1404,6 +1545,8 @@ function agentRun(task: Task, plan: Plan): AgentRun {
       turns: plan.turns,
       budgetSeconds: plan.budgetSeconds,
     });
+    const timeoutMs = (plan.budgetSeconds + 120) * 1000;
+    const attemptStarted = performance.now();
     let result: ReturnType<typeof Bun.spawnSync>;
     try {
       result = Bun.spawnSync(command, {
@@ -1411,7 +1554,10 @@ function agentRun(task: Task, plan: Plan): AgentRun {
         env: { ...process.env, PATH: `${join(homedir(), ".local", "bin")}:${process.env.PATH ?? ""}` },
         stdout: "pipe",
         stderr: "pipe",
-        timeout: (plan.budgetSeconds + 120) * 1000,
+        // Utan detta blockerar en CLI som läser stdin (t.ex. `codex exec` skriver
+        // "Reading additional input from stdin...") tills förälderns rör stängs.
+        stdin: "ignore",
+        timeout: timeoutMs,
       });
     } catch (error) {
       // A missing or unusable agent binary is a configuration failure, not a
@@ -1435,7 +1581,7 @@ function agentRun(task: Task, plan: Plan): AgentRun {
       const blocked = /^BLOCKED\b/m.test(text);
       const ranOut = /ran out of steps|run out of turns|max_iterations|run budget/i.test(text);
       const tail = text.split("\n").filter(Boolean).slice(-6).join(" | ").slice(0, 900);
-      appendUsage({ at: new Date().toISOString(), task: task.id, backend: backend.id, seconds, usage, exit: 0 });
+      appendUsage(buildReceipt({ at: new Date().toISOString(), task: task.id, backend: backend.id, seconds, exit: 0, fault: null, usage }));
       writeFileSync(logPath, collected.join("\n\n"));
       return {
         ok: !blocked && !ranOut,
@@ -1449,12 +1595,25 @@ function agentRun(task: Task, plan: Plan): AgentRun {
       };
     }
 
+    // En tidsgräns är inte en extern signal: ingen annan process avbröt körningen,
+    // agenten hann helt enkelt inte bli klar. Bun dödar barnet med SIGTERM, så
+    // exit 143 ser ut som ett avbrott — därför mäts tiden i stället för att gissas.
+    // Ett timeout ska räknas som ett misslyckat försök, annars upprepas samma
+    // uppgift i oändlighet (d3-06 körde två gånger om 720 s utan att räknas).
+    if (ranOutOfTime(result.exitCode, performance.now() - attemptStarted, timeoutMs)) {
+      const detail = `tidsgränsen (${Math.round(timeoutMs / 1000)} s) nåddes utan svar — försöket räknas som misslyckat`;
+      appendUsage(buildReceipt({ at: new Date().toISOString(), task: task.id, backend: backend.id, seconds, exit: result.exitCode, fault: "timeout", usage }));
+      writeFileSync(logPath, [...collected, `(${detail}; ingen utdata från agenten)`].filter(Boolean).join("\n\n"));
+      log(`backend ${backend.id}: ${detail}.`);
+      return { ok: false, detail, output: raw, seconds, logPath, backend: backend.id, fault: null, usage };
+    }
+
     // A non-zero exit may mean the backend ran dry, not that the attempt was bad.
     // 137/143 är SIGKILL/SIGTERM utifrån (omstart, systemet) — inte uppgiftens fel,
     // så backenden får ingen cooldown men loopen stannar utan att bränna strategier.
     const fault: BackendFault | null = result.exitCode === 137 || result.exitCode === 143 ? "interrupted" : classifyBackendOutput(`${raw}\n${text}`);
     const tail = raw.split("\n").filter(Boolean).slice(-6).join(" | ").slice(0, 900);
-    appendUsage({ at: new Date().toISOString(), task: task.id, backend: backend.id, seconds, usage, exit: result.exitCode, fault });
+    appendUsage(buildReceipt({ at: new Date().toISOString(), task: task.id, backend: backend.id, seconds, exit: result.exitCode, fault, usage }));
     writeFileSync(logPath, collected.join("\n\n"));
     if (fault) {
       // En extern signal säger ingenting om backendens kvot: ingen cooldown.
@@ -2094,6 +2253,10 @@ export function runDevelopmentCycle(options: { dryRun?: boolean } = {}): CycleRe
 if (import.meta.main) {
   const dryRun = process.argv.includes("--dry-run");
   const once = process.argv.includes("--once");
+  if (process.argv.includes("--usage")) {
+    console.log(usageReport(readUsage()));
+    process.exit(0);
+  }
   if (process.argv.includes("--repair")) {
     const moved = quarantineDuplicates();
     console.log(moved.length === 0 ? "Inga iCloud-dubbletter hittades." : `Flyttade ${moved.length} dubblett(er) till data/agent/quarantine: ${moved.join(", ")}`);

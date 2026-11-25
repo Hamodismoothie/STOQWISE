@@ -191,3 +191,83 @@ Arbetet får inte ändra affärslogik, prissättning, abonnemang, behörigheter,
 produktionsdata eller göra produktionsdistributioner utan uttryckligt uppdrag.
 Inget pushas eller deployas. Arbetaren rör ingen produktionsdata och skickar
 ingen e-post.
+
+## Z0-verifiering (2026-11-25)
+
+Z0 är godkänt och de tre kvarvarande verifieringspunkterna är genomförda.
+Slingan är **pausad** med `data/agent/STOP`; ingen ny uppgift startas förrän
+filen tas bort.
+
+### 1. Varför d3-06 fick upprepade SIGTERM
+
+Två fel förstärkte varandra:
+
+- **Grinden var omöjlig.** `verify` filtrerade på `-g minne`, men inget test i
+  `e2e/live-warehouse.spec.ts` heter det — Playwright svarar `Error: No tests
+  found`. Uppgiften kunde alltså aldrig godkännas, hur bra arbetet än var.
+  Filtret är nu `-g läcker`, och briefen säger att testets titel ska innehålla ordet.
+- **Tidsgränsen förväxlades med ett avbrott.** Bun dödar en agent som spränger sin
+  `timeout` med SIGTERM, vilket blir exit 143 — samma kod som en extern signal.
+  Motorn behandlade det som avbrott: ingen cooldown, ingen förbrukad strategi,
+  uppgiften låg kvar. Det blev en oändlig serie 720-sekunderskörningar.
+
+Bevis: `Bun.spawnSync(["sleep","5"], {timeout: 1000})` ger `signalCode: "SIGTERM"`;
+de två sista d3-06-körningarna var 720,5 respektive 720,8 s mot en gräns på 720 s,
+och Claude Codes eget transkript säger `totalDuration: 720008`. Nu mäts tiden
+(`ranOutOfTime`) och ett timeout räknas som ett **misslyckat försök**, så
+strategistegen går vidare och uppgiften parkeras i stället för att köras för evigt.
+
+De fyra tidigare 143-avbrotten (124,5 / 76 / 3,8 / 0,9 s) kan inte komma från
+motorns egen gräns. Deras transkript slutar med ett Bash-anrop som dödades med
+SIGKILL i samma sekund som sessionen dog — signaturen för att hela processgruppen
+fick SIGTERM utifrån. Det skedde i samma fönster (18:28–18:39) som fyra omstarter
+av arbetaren, och har inte återkommit. Exakt avsändare är fortfarande inte fastställd.
+
+### 2. Codex verifierad mot en riktig uppgift
+
+`codex exec --sandbox workspace-write --skip-git-repo-check` kördes mot en liten
+testfil (`sum()` med avsiktlig bugg plus `check.js` som fallerar):
+
+- **Autentisering:** `codex login status` → *Logged in using ChatGPT*.
+- **Körning:** `turn.started` följt av `turn.failed`.
+- **Fel:** *"You've hit your usage limit. Upgrade to Plus … or try again at
+  Dec 4th, 2026 10:28 AM."* — Codex-planens kvot är slut till 4 december.
+- **Filskrivning, verifiering och kvitto kunde därför inte verifieras.** `sum.js`
+  är oförändrad och `check.js` fallerar fortfarande (exit 1).
+
+Det som däremot verifierades: felet klassas som **kvot** av
+`classifyBackendOutput`, så växling och cooldown fungerar för Codex riktiga
+felsvar — tidigare bara bevisat med falsk binär.
+
+Bugg hittad på vägen: `codex exec` skriver *"Reading additional input from
+stdin..."* och blockerar tills stdin stängs. Motorn skickar nu `stdin: "ignore"`
+till alla agentanrop, så en CLI som läser stdin inte kan hänga en körning.
+
+### 3. Tokenboken skiljer på tre sorters pengar
+
+`data/agent/usage.jsonl` skrivs av `buildReceipt` med `tokens`, `billing`,
+`actualCostUsd` och `apiEquivalentUsd`. Prenumerationsläge ger `actualCostUsd: 0`
+och ändå en API-motsvarighet; API-nyckelläge ger `actualCostUsd` = CLI:ts siffra.
+`bun scripts/dev-agent.ts --usage` summerar per backend. Nuläget:
+
+```
+claude: 9 körningar · 11629 output-tokens · faktisk extra kostnad 0.0000 USD · API-motsvarighet 0.9087 USD, 8 utan prisuppgift
+codex: 2 körningar · 0 output-tokens · faktisk extra kostnad 0.0000 USD · API-motsvarighet 0.0000 USD, 2 utan prisuppgift
+```
+
+De åtta raderna utan prisuppgift är körningar som dödades innan CLI:t hann skriva
+sitt kvitto.
+
+### 4. Kvotförbrukning (återfunnen ur Claude Codes transkript)
+
+| Körning | Tid | Output | API-motsvarighet |
+|---|---|---|---|
+| d3-05 (18:30, klar) | 131,3 s | 11 629 | 0,909 USD |
+| d3-06 försök 1 (18:33) | 123,8 s | 6 252 | 0,721 USD |
+| d3-06 försök 2 (18:36) | 75,5 s | 1 694 | 0,400 USD |
+| d3-06 försök 3 (18:52) | 720,0 s | 8 280 | 0,839 USD |
+| d3-06 försök 4 (19:04) | 720,0 s | 8 807 | 0,968 USD |
+| modellprobe ("Svara endast: OK") | 3,7 s | 4 | 0,271 USD |
+
+Summa ≈ 4,11 USD API-motsvarighet, **0 kr faktisk extra kostnad**. Codex: ett
+anrop, noll tokens förbrukade (kvoten var redan slut).

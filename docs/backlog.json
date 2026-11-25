@@ -283,7 +283,7 @@
     {
       "id": "d3-06",
       "title": "Verifiera att sceneväxling inte läcker GPU-resurser",
-      "brief": "warehouse.js dispose:ar geometri och material vid scenebyte och app-world.js har en dispose()-funktion, men det finns ingen regressionstest på upprepade växlingar mellan visualiseringslägena. Lägg till ett test som växlar läge minst 20 gånger och kontrollerar att antalet aktiva geometrier/materials i renderer.info inte växer och att dispose anropas för texture, geometry och material.",
+      "brief": "warehouse.js dispose:ar geometri och material vid scenebyte och app-world.js har en dispose()-funktion, men det finns ingen regressionstest på upprepade växlingar mellan visualiseringslägena. Lägg till ett test som växlar läge minst 20 gånger och kontrollerar att antalet aktiva geometrier/materials i renderer.info inte växer och att dispose anropas för texture, geometry och material. Testets titel ska innehålla ordet läcker — verify-kommandot filtrerar på det.",
       "files": [
         "public/world/warehouse.js",
         "public/world/app-world.js",
@@ -292,8 +292,9 @@
       ],
       "priority": 6,
       "status": "pending",
-      "accept": "bunx playwright test e2e/live-warehouse.spec.ts -g minne --workers=1: renderer.info.memory geometries och textures är desamma före och efter 20 växlingar.",
-      "verify": "bunx playwright test e2e/live-warehouse.spec.ts -g minne --workers=1"
+      "accept": "bunx playwright test e2e/live-warehouse.spec.ts -g läcker --workers=1: renderer.info.memory geometries och textures är desamma före och efter 20 växlingar.",
+      "verify": "bunx playwright test e2e/live-warehouse.spec.ts -g läcker --workers=1",
+      "note": "grinden var omöjlig: -g minne matchade inget test (Playwright: No tests found). Rättad 2026-11-25 efter Z0-verifiering; filtret är nu -g läcker. En full e2e-körning tar 230–300 s, alltså mer än agentens tidsbudget — därför ett smalt filter."
     },
     {
       "id": "d3-07",
