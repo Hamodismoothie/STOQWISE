@@ -1911,6 +1911,15 @@ function cycleWork(options: { dryRun?: boolean } = {}): CycleResult {
 
     const plan = buildPlan({ task: next, failure, strategy, attempt, maxAttempts: MAX_ATTEMPTS, model, remainingSeconds: remaining });
     const agent = agentRun(next, plan);
+    // Z0: en slut kvot, en trasig inloggning eller en saknad binär är inte
+    // uppgiftens fel. Stoppa här, låt uppgiften ligga kvar och lämna
+    // strategistegen orörd — nästa cykel väntar i stället för att bränna försök.
+    if (agent.fault) {
+      status = "pending";
+      detail = `väntar på backend: ${agent.detail}`;
+      log(`${next.id}: ${detail}; inga strategier förbrukade.`);
+      break;
+    }
     const diff = diffManifests(before);
     const created = diff.changed.filter((path) => !before.has(path));
     files = [...diff.changed, ...diff.deleted];
