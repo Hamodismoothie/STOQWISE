@@ -82,6 +82,66 @@ const HERMES = process.env.HERMES_BIN ?? join(homedir(), ".local", "bin", "herme
 /** Free models on the already-configured provider, tried in order. */
 const DEFAULT_MODELS = ["tencent/hy4-flash:free", "upstage/solar-mini4:free", "stepfun/step-3.7-flash:free"];
 
+/**
+ * Which headless coding agent the loop drives. The engine owns the task, the
+ * gates and the rollback; the agent is a replaceable command.
+ *
+ *   hermes (default) — Nous Portal free models, `hermes chat --oneshot`
+ *   claude           — Claude Code in print mode, `claude -p`
+ *
+ * Hermes disappeared from `~/.local/bin` on 2026-11-25, which turned every cycle
+ * into an `ENOENT` throw *after* the task had been picked. The backend is now an
+ * explicit choice, and a missing binary is a named failure instead of a crash.
+ */
+type Backend = "hermes" | "claude";
+const AGENT_CLI: Backend = process.env.AGENT_CLI === "claude" ? "claude" : "hermes";
+const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
+
+/** The command that runs the agent once for a prompt. */
+function agentCommand(input: { prompt: string; promptPath: string; model: string; turns: number; budgetSeconds: number }): string[] {
+  if (AGENT_CLI === "claude") {
+    // Print mode is Claude Code's headless form. `acceptEdits` lets it write the
+    // files, and the tool allow-list lets it run the gates; the loop's own path
+    // and hash guards still decide what may change.
+    return [
+      CLAUDE_BIN,
+      "-p",
+      input.prompt,
+      "--output-format",
+      "text",
+      "--max-turns",
+      String(input.turns),
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+    ];
+  }
+  return [
+    HERMES,
+    "chat",
+    "--oneshot",
+    "-Q",
+    "--toolsets",
+    "terminal,file,code_execution",
+    "--in",
+    ROOT,
+    "--max-turns",
+    String(input.turns),
+    "--run-budget",
+    String(input.budgetSeconds),
+    "-m",
+    input.model,
+    "--query-file",
+    input.promptPath,
+  ];
+}
+
 const ALLOWED_PREFIXES = ["src/", "public/", "tests/", "docs/", "scripts/", "e2e/"];
 const DENIED_PATHS = [
   "package.json",
@@ -116,6 +176,15 @@ const MODEL_TTL_HOURS = 6;
 /** A green preflight is reused for ten minutes, a red one for three. */
 const PREFLIGHT_OK_MS = 10 * 60_000;
 const PREFLIGHT_RED_MS = 3 * 60_000;
+
+/** Hard cap on model runs per day. A paid backend must not be able to run away. */
+const DAILY_MAX = Math.max(1, Number(process.env.AGENT_DAILY_MAX ?? 12));
+
+function dailyUsage(state: State): { date: string; tasks: number } {
+  const today = new Date().toISOString().slice(0, 10);
+  if (!state.daily || state.daily.date !== today) state.daily = { date: today, tasks: 0 };
+  return state.daily;
+}
 
 export type Task = {
   id: string;
@@ -239,6 +308,8 @@ type State = {
   tasksBlocked: number;
   /** Last time the agent proposed new work; used to tell unreviewed proposals from reviewed ones. */
   lastProposalAt?: string | null;
+  /** Model calls per UTC day, so an expensive backend cannot run away. */
+  daily?: { date: string; tasks: number };
   /** Per-task recovery bookkeeping, so a later cycle continues the ladder instead of repeating it. */
   recoveries?: Record<string, Recovery>;
   /** Cached preflight, so a 30-minute cycle does not run the suite twice. */
@@ -818,14 +889,24 @@ export function quarantineDuplicates(root = ROOT, targetDir?: string): string[] 
  * ------------------------------------------------------------------ */
 
 function resolveModel(state: State): string | null {
-  const fresh = state.model && state.modelCheckedAt &&
-    (Date.now() - new Date(state.modelCheckedAt).getTime()) / 3_600_000 < MODEL_TTL_HOURS;
-  if (fresh) return state.model;
+  // The backend decides first: a cached Hermes model name must never be reported
+  // for a Claude run (it was, once, and the report said the wrong thing).
+  if (AGENT_CLI === "claude") {
+    // Claude Code picks its own model; there is no free-model ladder to probe.
+    const model = process.env.AGENT_MODEL ?? "claude-default";
+    if (state.model !== model) {
+      state.model = model;
+      state.modelError = null;
+      state.modelCheckedAt = nowIso();
+      writeState(state);
+    }
+    return model;
+  }
 
   if (!existsSync(HERMES)) {
     state.model = null;
     state.modelCheckedAt = nowIso();
-    state.modelError = `Hermes saknas på ${HERMES}`;
+    state.modelError = `Hermes saknas på ${HERMES}; sätt AGENT_CLI=claude för att använda Claude Code`;
     writeState(state);
     return null;
   }
@@ -864,6 +945,7 @@ const VERDICT_TTL_MS = 6 * 3_600_000;
 function probeModel(model: string): boolean {
   const cached = modelVerdicts.get(model);
   if (cached && Date.now() - cached.at < VERDICT_TTL_MS) return cached.ok;
+  if (AGENT_CLI === "claude") return true;
   if (!existsSync(HERMES)) return false;
   const probe = run(
     [HERMES, "chat", "--oneshot", "-Q", "--max-turns", "1", "--run-budget", "45", "--in", ROOT, "-m", model, "--query", "Svara endast: OK"],
@@ -880,6 +962,10 @@ function probeModel(model: string): boolean {
  * responds the current model is kept and the other strategies do the work.
  */
 export function nextModel(current: string, probe: (model: string) => boolean = probeModel): string {
+  if (AGENT_CLI === "claude") {
+    log("Claude-backend: ingen modellstege; reservstrategierna använder samma modell.");
+    return current;
+  }
   const candidates = process.env.AGENT_MODEL ? [process.env.AGENT_MODEL] : DEFAULT_MODELS;
   for (const model of candidates) {
     if (model === current) continue;
@@ -953,31 +1039,38 @@ Begränsningar: inga nya beroenden, inga ändringar av prissättning, abonnemang
 Svara med en numrerad markdown-lista och inget annat.`;
   const promptPath = join(LOG_DIR, "proposal.prompt.txt");
   writeFileSync(promptPath, prompt);
-  const result = Bun.spawnSync(
-    [
-      HERMES,
-      "chat",
-      "--oneshot",
-      "-Q",
-      "--in",
-      ROOT,
-      "--max-turns",
-      "16",
-      "--run-budget",
-      "300",
-      "-m",
-      model,
-      "--query-file",
-      promptPath,
-    ],
-    {
+  const command =
+    AGENT_CLI === "claude"
+      ? agentCommand({ prompt, promptPath, model, turns: 16, budgetSeconds: 300 })
+      : [
+          HERMES,
+          "chat",
+          "--oneshot",
+          "-Q",
+          "--in",
+          ROOT,
+          "--max-turns",
+          "16",
+          "--run-budget",
+          "300",
+          "-m",
+          model,
+          "--query-file",
+          promptPath,
+        ];
+  let result: ReturnType<typeof Bun.spawnSync>;
+  try {
+    result = Bun.spawnSync(command, {
       cwd: ROOT,
       env: { ...process.env, PATH: `${join(homedir(), ".local", "bin")}:${process.env.PATH ?? ""}` },
       stdout: "pipe",
       stderr: "pipe",
       timeout: 420_000,
-    },
-  );
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, detail: `agenten kunde inte startas (${AGENT_CLI}): ${message}` };
+  }
   const output = `${result.stdout?.toString() ?? ""}${result.stderr?.toString() ?? ""}`
     .split("\n")
     .filter((line) => !line.startsWith("session_id:"))
@@ -1100,34 +1193,35 @@ function agentRun(task: Task, plan: Plan): { ok: boolean; detail: string; output
   writeFileSync(promptPath, plan.prompt);
 
   const started = performance.now();
-  const result = Bun.spawnSync(
-    [
-      HERMES,
-      "chat",
-      "--oneshot",
-      "-Q",
-      "--toolsets",
-      "terminal,file,code_execution",
-
-      "--in",
-      ROOT,
-      "--max-turns",
-      String(plan.turns),
-      "--run-budget",
-      String(plan.budgetSeconds),
-      "-m",
-      plan.model,
-      "--query-file",
-      promptPath,
-    ],
-    {
+  const command = agentCommand({
+    prompt: plan.prompt,
+    promptPath,
+    model: plan.model,
+    turns: plan.turns,
+    budgetSeconds: plan.budgetSeconds,
+  });
+  let result: ReturnType<typeof Bun.spawnSync>;
+  try {
+    result = Bun.spawnSync(command, {
       cwd: ROOT,
       env: { ...process.env, PATH: `${join(homedir(), ".local", "bin")}:${process.env.PATH ?? ""}` },
       stdout: "pipe",
       stderr: "pipe",
       timeout: (plan.budgetSeconds + 120) * 1000,
-    },
-  );
+    });
+  } catch (error) {
+    // A missing or unusable agent binary is a configuration failure, not a
+    // crash: the attempt is recorded and rolled back like any other failure.
+    const message = error instanceof Error ? error.message : String(error);
+    writeFileSync(logPath, `kunde inte starta agenten (${AGENT_CLI}): ${message}\n`);
+    return {
+      ok: false,
+      detail: `agenten kunde inte startas (${AGENT_CLI}): ${message}`,
+      output: message,
+      seconds: 0,
+      logPath,
+    };
+  }
   const output = `${result.stdout?.toString() ?? ""}\n${result.stderr?.toString() ?? ""}`.trim();
   writeFileSync(logPath, output);
   const blocked = /^BLOCKED\b/m.test(output);
@@ -1406,6 +1500,10 @@ function cycleWork(options: { dryRun?: boolean } = {}): CycleResult {
   if (lint.warnings.length > 0) {
     log(`${lint.warnings.length} varning(ar) i backloggen: ${lint.warnings.slice(0, 3).join(" · ")}${lint.warnings.length > 3 ? " …" : ""}`);
   }
+  const daily = dailyUsage(state);
+  if (daily.tasks >= DAILY_MAX) {
+    return { ok: true, halt: true, detail: `dygnsgränsen är nådd (${daily.tasks}/${DAILY_MAX} uppgifter idag); fortsätter i morgon.` };
+  }
   const next = nextPending(backlog);
   if (!next) {
     // Nothing to implement: use the cycle to suggest what should come next. The
@@ -1429,6 +1527,10 @@ function cycleWork(options: { dryRun?: boolean } = {}): CycleResult {
     return { ok: proposal.ok, halt: true, detail: proposal.detail };
   }
 
+  // Counted when the task starts, not when it succeeds: a task that burns four
+  // attempts costs as much as one that passes.
+  daily.tasks += 1;
+  writeState(state);
   resetIfRequeued(state, next);
   const known = readRecovery(state, next.id);
   const upcoming = known.tried.length > 0 ? nextStrategy(known.kind, known.tried) : null;

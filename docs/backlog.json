@@ -238,9 +238,12 @@
         "e2e/perf.spec.ts"
       ],
       "priority": 3,
-      "status": "pending",
+      "status": "done",
       "accept": "bunx playwright test e2e/perf.spec.ts --workers=1: inga frame-timestamps registreras efter visibilitychange till hidden eller när canvasen lämnar viewport.",
-      "verify": "bunx playwright test e2e/perf.spec.ts --workers=1"
+      "verify": "bunx playwright test e2e/perf.spec.ts --workers=1",
+      "doneAt": "2026-11-25T18:02:10.291Z",
+      "note": "typkontroll + typkontroll ok 4.1s · tester ok 10.7s · accept (bunx playwright test e2e/perf.spec.ts --workers=1) ok 86.8s · 133.6s agent · strategi agent-tighter",
+      "commit": "24fd04c"
     },
     {
       "id": "d3-04",
@@ -1599,15 +1602,17 @@
       "id": "qa-11",
       "title": "Lägg /api/v1/health i smoke-testets yta",
       "priority": 1,
-      "status": "pending",
+      "status": "done",
       "brief": "Smoke-steget i scripts/autopilot.ts kontrollerar /halsa men inte det publika API:ets hälsorutt. Lägg till sökvägen \"/api/v1/health\" i listan som kontrolleras (arrayen som börjar med \"/halsa\"). Ändra inget annat: ingen ny logik i servern, inga nya beroenden, inga andra filer.",
       "files": [
         "scripts/autopilot.ts"
       ],
       "verify": "bun scripts/autopilot.ts --quick",
       "acceptance": "Smoke-steget begär /api/v1/health mot en temporär server på en fri port och rapporterar grönt. Ingen produktionsdata, prismodell eller serverlogik ändras.",
-      "note": "Canary: första transparenta körningen efter motorreparationen 2026-11-25.",
-      "risk": "low"
+      "note": "typkontroll + typkontroll ok 1.6s · tester ok 7.1s · accept (bun scripts/autopilot.ts --quick) ok 1.8s · 52.3s agent · strategi tests-repair",
+      "risk": "low",
+      "doneAt": "2026-11-25T17:44:37.726Z",
+      "commit": "0928c5e"
     }
   ]
 }
