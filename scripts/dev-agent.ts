@@ -174,7 +174,7 @@ export function agentCommand(
  * Z0: kvotmedvetenhet
  * ------------------------------------------------------------------ */
 
-export type BackendFault = "quota" | "auth" | "unavailable";
+export type BackendFault = "quota" | "auth" | "unavailable" | "interrupted";
 
 /** What the backend said, not what we hoped it said. */
 export function classifyBackendOutput(text: string): BackendFault | null {
@@ -1369,6 +1369,7 @@ type AgentRun = {
 function faultLabel(fault: BackendFault): string {
   if (fault === "quota") return "kvoten är slut";
   if (fault === "auth") return "inloggningen fungerar inte";
+  if (fault === "interrupted") return "avbruten av signal";
   return "körbar fil saknas";
 }
 
@@ -1449,16 +1450,23 @@ function agentRun(task: Task, plan: Plan): AgentRun {
     }
 
     // A non-zero exit may mean the backend ran dry, not that the attempt was bad.
-    const fault = classifyBackendOutput(`${raw}\n${text}`);
+    // 137/143 är SIGKILL/SIGTERM utifrån (omstart, systemet) — inte uppgiftens fel,
+    // så backenden får ingen cooldown men loopen stannar utan att bränna strategier.
+    const fault: BackendFault | null = result.exitCode === 137 || result.exitCode === 143 ? "interrupted" : classifyBackendOutput(`${raw}\n${text}`);
     const tail = raw.split("\n").filter(Boolean).slice(-6).join(" | ").slice(0, 900);
     appendUsage({ at: new Date().toISOString(), task: task.id, backend: backend.id, seconds, usage, exit: result.exitCode, fault });
     writeFileSync(logPath, collected.join("\n\n"));
     if (fault) {
-      health = applyFault(health, backend.id, fault, tail, Date.now());
-      writeHealth(health);
-      log(`backend ${backend.id}: ${faultLabel(fault)} — ${fault === "auth" ? "ingen cooldown, uppgiften parkeras" : "cooldown satt"}.`);
+      // En extern signal säger ingenting om backendens kvot: ingen cooldown.
+      if (fault !== "interrupted") {
+        health = applyFault(health, backend.id, fault, tail, Date.now());
+        writeHealth(health);
+      }
+      log(`backend ${backend.id}: ${faultLabel(fault)} — ${fault === "interrupted" ? "ingen cooldown" : fault === "auth" ? "ingen cooldown, uppgiften parkeras" : "cooldown satt"}.`);
       const alternative =
-        fault === "auth" ? null : selectBackend(pool.filter((candidate) => candidate.id !== backend.id), health, Date.now());
+        fault === "auth" || fault === "interrupted"
+          ? null
+          : selectBackend(pool.filter((candidate) => candidate.id !== backend.id), health, Date.now());
       if (alternative && step === 0) {
         log(`byter backend till ${alternative.id} för samma försök.`);
         continue;

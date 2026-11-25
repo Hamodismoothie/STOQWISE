@@ -273,9 +273,12 @@
         "tests/motion.test.ts"
       ],
       "priority": 5,
-      "status": "pending",
+      "status": "done",
       "accept": "bun test tests/motion.test.ts och ett e2e-test där växeln sparas i en clerk och samma värde läses av båda sidorna efter navigering.",
-      "verify": "bun test tests/motion.test.ts"
+      "verify": "bun test tests/motion.test.ts",
+      "doneAt": "2026-11-25T18:33:10.995Z",
+      "note": "typkontroll + typkontroll ok 4s · tester ok 10.6s · accept (bun test tests/motion.test.ts) ok 0s · 131.3s agent",
+      "commit": "1e26bbf"
     },
     {
       "id": "d3-06",
