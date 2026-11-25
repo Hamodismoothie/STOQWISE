@@ -13,6 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   allowed,
+  applyFault,
+  applySuccess,
+  classifyBackendOutput,
+  describeCooling,
+  nextCooldownMinutes,
+  parseAgentOutput,
+  selectBackend,
   blockedNote,
   classifyErrorText,
   classifyFailure,
@@ -27,8 +34,10 @@ import {
   snapshotAvailable,
   strategiesFor,
   takeSnapshot,
+  type BackendSpec,
   type Backlog,
   type FailureKind,
+  type HealthMap,
   type Task,
 } from "../scripts/dev-agent.ts";
 import { extractCommand } from "../scripts/backlog-verify.ts";
@@ -193,15 +202,22 @@ describe("reservstrategier", () => {
     // AGENT_CLI läses vid import och ärvs från den agent som kör sviten. Med
     // Claude-backend finns ingen modellstege: samma modell behålls och ingen
     // modell provas.
-    if (process.env.AGENT_CLI === "claude") {
+    const saved = process.env.AGENT_CLI;
+    try {
+      // Modellstegen finns bara på Hermes; poolen väljer annars Claude eller Codex,
+      // som har en fast modell och ingen stege att prova.
+      process.env.AGENT_CLI = "hermes";
+      // En modell som svarar väljs; en som inte svarar får aldrig ett försök.
+      expect(nextModel(current, (model) => model === "upstage/solar-mini4:free")).toBe("upstage/solar-mini4:free");
+      expect(nextModel(current, () => false)).toBe(current);
+      process.env.AGENT_CLI = "claude";
       let probed = 0;
       expect(nextModel(current, () => (probed++, true))).toBe(current);
       expect(probed).toBe(0);
-      return;
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_CLI;
+      else process.env.AGENT_CLI = saved;
     }
-    // En modell som svarar väljs; en som inte svarar får aldrig ett försök.
-    expect(nextModel(current, (model) => model === "upstage/solar-mini4:free")).toBe("upstage/solar-mini4:free");
-    expect(nextModel(current, () => false)).toBe(current);
   });
 
   test("blockeringsnoten dokumenterar fel, strategier och verifiering", () => {
@@ -307,5 +323,100 @@ describe("ögonblicksbild och återställning", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Z0: kvotmedvetenhet", () => {
+  const pool: BackendSpec[] = [
+    { id: "claude", bin: "claude", label: "Claude Code" },
+    { id: "codex", bin: "codex", label: "Codex" },
+  ];
+  const healthy = (over: Partial<HealthMap[string]> = {}): HealthMap[string] => ({
+    state: "available",
+    until: null,
+    strikes: 0,
+    lastError: null,
+    lastFault: null,
+    updatedAt: "2026-11-25T00:00:00.000Z",
+    ...over,
+  });
+
+  test("kvotsvar, inloggningsfel och saknad binär klassas olika", () => {
+    expect(classifyBackendOutput("Claude AI usage limit reached. Resets at 15:40")).toBe("quota");
+    expect(classifyBackendOutput("Error 429: too many requests")).toBe("quota");
+    expect(classifyBackendOutput("API error: quota exceeded for this billing period")).toBe("quota");
+    expect(classifyBackendOutput("401 Unauthorized: invalid api key")).toBe("auth");
+    expect(classifyBackendOutput("Please log in again to continue")).toBe("auth");
+    expect(classifyBackendOutput("spawn claude ENOENT")).toBe("unavailable");
+    expect(classifyBackendOutput("Alla tester gröna, typkontroll 0 fel")).toBeNull();
+  });
+
+  test("cooldown trappas upp och taket är sex timmar", () => {
+    expect([0, 1, 2, 3, 4, 9].map(nextCooldownMinutes)).toEqual([15, 45, 120, 360, 360, 360]);
+  });
+
+  test("en kylande backend hoppas över tills tiden gått ut", () => {
+    const now = Date.parse("2026-11-25T12:00:00.000Z");
+    const health = { claude: healthy({ state: "cooling", until: now + 60_000 }) };
+    expect(selectBackend(pool, health, now)?.id).toBe("codex");
+    expect(selectBackend(pool, health, now + 60_000)?.id).toBe("claude");
+  });
+
+  test("när alla är i cooldown väljs ingen backend alls", () => {
+    const now = Date.parse("2026-11-25T12:00:00.000Z");
+    const health = {
+      claude: healthy({ state: "cooling", until: now + 900_000 }),
+      codex: healthy({ state: "cooling", until: now + 2_700_000 }),
+    };
+    expect(selectBackend(pool, health, now)).toBeNull();
+    expect(describeCooling(health, now)).toContain("claude 15 min");
+    expect(describeCooling(health, now)).toContain("codex 45 min");
+  });
+
+  test("ett kvotfel sätter cooldown med växande straff", () => {
+    const now = Date.parse("2026-11-25T12:00:00.000Z");
+    const first = applyFault({}, "claude", "quota", "usage limit reached", now);
+    expect(first.claude?.state).toBe("cooling");
+    expect(first.claude?.until).toBe(now + 15 * 60_000);
+    expect(first.claude?.strikes).toBe(1);
+    const second = applyFault(first, "claude", "quota", "usage limit reached", now);
+    expect(second.claude?.strikes).toBe(2);
+    expect(second.claude?.until).toBe(now + 45 * 60_000);
+  });
+
+  test("inloggningsfel ger ingen cooldown — det läker inte av sig självt", () => {
+    const now = Date.parse("2026-11-25T12:00:00.000Z");
+    const health = applyFault({}, "codex", "auth", "not logged in", now);
+    expect(health.codex?.state).toBe("available");
+    expect(health.codex?.until).toBeNull();
+    expect(health.codex?.lastFault).toBe("auth");
+  });
+
+  test("en lyckad körning nollställer straffet", () => {
+    const now = Date.parse("2026-11-25T12:00:00.000Z");
+    const cooling = applyFault({}, "claude", "quota", "usage limit reached", now);
+    expect(applySuccess(cooling, "claude", now).claude).toMatchObject({ state: "available", strikes: 0, lastError: null });
+  });
+
+  test("Claude Codes JSON läses som kvitto, vanlig text som text", () => {
+    const envelope = [
+      "Warning: no stdin data received in 3s",
+      JSON.stringify({
+        result: "Klart: 2 filer ändrade",
+        total_cost_usd: 0.2039,
+        usage: {
+          input_tokens: 2,
+          output_tokens: 4,
+          cache_read_input_tokens: 9444,
+          cache_creation_input_tokens: 25245,
+        },
+      }),
+    ].join("\n");
+    expect(parseAgentOutput(envelope)).toEqual({
+      text: "Klart: 2 filer ändrade",
+      usage: { input: 2, output: 4, cacheRead: 9444, cacheWrite: 25245, costUsd: 0.2039 },
+    });
+    expect(parseAgentOutput("vanligt svar utan kvitto")).toEqual({ text: "vanligt svar utan kvitto", usage: null });
+    expect(parseAgentOutput("{ trasig json")).toEqual({ text: "{ trasig json", usage: null });
   });
 });

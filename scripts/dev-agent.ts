@@ -86,29 +86,43 @@ const DEFAULT_MODELS = ["tencent/hy4-flash:free", "upstage/solar-mini4:free", "s
  * Which headless coding agent the loop drives. The engine owns the task, the
  * gates and the rollback; the agent is a replaceable command.
  *
- *   hermes (default) — Nous Portal free models, `hermes chat --oneshot`
- *   claude           — Claude Code in print mode, `claude -p`
  *
- * Hermes disappeared from `~/.local/bin` on 2026-11-25, which turned every cycle
- * into an `ENOENT` throw *after* the task had been picked. The backend is now an
- * explicit choice, and a missing binary is a named failure instead of a crash.
+ * Ordningen är kvalitet först: Claude Code (befintlig prenumeration), Codex
+ * (ChatGPT-planen), sist Hermes om binären finns igen. En backend som svarar med
+ * kvot- eller körfel flyttas till cooldown — den bränner aldrig uppgiftens
+ * försök, och när alla är i cooldown väntar slingan i stället för att hamra.
  */
-type Backend = "hermes" | "claude";
-const AGENT_CLI: Backend = process.env.AGENT_CLI === "claude" ? "claude" : "hermes";
-const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
+export type BackendId = "claude" | "codex" | "hermes";
 
-/** The command that runs the agent once for a prompt. */
-function agentCommand(input: { prompt: string; promptPath: string; model: string; turns: number; budgetSeconds: number }): string[] {
-  if (AGENT_CLI === "claude") {
+export type BackendSpec = { id: BackendId; bin: string; label: string };
+
+/** Poolen i den ordning den provas; `AGENT_CLI` tvingar fram en enda. */
+export function backendPool(): BackendSpec[] {
+  const pool: BackendSpec[] = [
+    { id: "claude", bin: process.env.CLAUDE_BIN ?? "claude", label: "Claude Code" },
+    { id: "codex", bin: process.env.CODEX_BIN ?? "codex", label: "Codex" },
+    { id: "hermes", bin: HERMES, label: "Hermes" },
+  ];
+  const forced = process.env.AGENT_CLI as BackendId | undefined;
+  return forced ? pool.filter((backend) => backend.id === forced) : pool;
+}
+
+/** The command that runs one backend once for a prompt. */
+export function agentCommand(
+  backend: BackendSpec,
+  input: { prompt: string; promptPath: string; model: string; turns: number; budgetSeconds: number },
+): string[] {
+  if (backend.id === "claude") {
     // Print mode is Claude Code's headless form. `acceptEdits` lets it write the
-    // files, and the tool allow-list lets it run the gates; the loop's own path
-    // and hash guards still decide what may change.
+    // files and the tool allow-list lets it run the gates; the loop's own path
+    // guards still decide what may change. JSON gives a receipt: token counts
+    // and total_cost_usd, which is what the zero-cost bookkeeping measures.
     return [
-      CLAUDE_BIN,
+      backend.bin,
       "-p",
       input.prompt,
       "--output-format",
-      "text",
+      "json",
       "--max-turns",
       String(input.turns),
       "--permission-mode",
@@ -122,8 +136,22 @@ function agentCommand(input: { prompt: string; promptPath: string; model: string
       "Grep",
     ];
   }
+  if (backend.id === "codex") {
+    // `exec` is Codex's non-interactive mode; workspace-write lets it edit the
+    // repository, and the engine's own guards still bound what it may touch.
+    return [
+      backend.bin,
+      "exec",
+      "--cd",
+      ROOT,
+      "--sandbox",
+      "workspace-write",
+      "--skip-git-repo-check",
+      input.prompt,
+    ];
+  }
   return [
-    HERMES,
+    backend.bin,
     "chat",
     "--oneshot",
     "-Q",
@@ -140,6 +168,156 @@ function agentCommand(input: { prompt: string; promptPath: string; model: string
     "--query-file",
     input.promptPath,
   ];
+}
+
+/* ------------------------------------------------------------------ *
+ * Z0: kvotmedvetenhet
+ * ------------------------------------------------------------------ */
+
+export type BackendFault = "quota" | "auth" | "unavailable";
+
+/** What the backend said, not what we hoped it said. */
+export function classifyBackendOutput(text: string): BackendFault | null {
+  if (/usage limit|rate.?limit|quota|too many requests|\b429\b|out of credits|insufficient[ _]?(credits|quota)|limit reached|resets? at/i.test(text)) {
+    return "quota";
+  }
+  if (/invalid api key|unauthorized|\b401\b|authentication|not logged in|please log ?in|token (has )?expired|\b403\b/i.test(text)) {
+    return "auth";
+  }
+  if (/ENOENT|not found in \$PATH|ENOTFOUND|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network error/i.test(text)) {
+    return "unavailable";
+  }
+  return null;
+}
+
+/** Backoff: 15 min, 45 min, 2 h, 6 h. Capped — never an infinite retry. */
+const COOLDOWN_MINUTES = [15, 45, 120, 360];
+export function nextCooldownMinutes(strikes: number): number {
+  const index = Math.max(0, Math.min(strikes, COOLDOWN_MINUTES.length - 1));
+  return COOLDOWN_MINUTES[index]!;
+}
+
+export type BackendHealth = {
+  state: "available" | "cooling";
+  until: number | null;
+  strikes: number;
+  lastError: string | null;
+  lastFault: BackendFault | null;
+  updatedAt: string;
+};
+export type HealthMap = Record<string, BackendHealth>;
+
+const HEALTH_FILE = join(STATE_DIR, "backends.json");
+
+export function readHealth(): HealthMap {
+  try {
+    return JSON.parse(readFileSync(HEALTH_FILE, "utf8")) as HealthMap;
+  } catch {
+    return {};
+  }
+}
+
+function writeHealth(health: HealthMap): void {
+  mkdirSync(STATE_DIR, { recursive: true });
+  writeFileSync(HEALTH_FILE, `${JSON.stringify(health, null, 2)}\n`);
+}
+
+/** The first backend that is not cooling, or null when every one is. */
+export function selectBackend(pool: BackendSpec[], health: HealthMap, now: number): BackendSpec | null {
+  for (const backend of pool) {
+    const state = health[backend.id];
+    if (!state || state.state === "available") return backend;
+    if (state.until !== null && state.until <= now) return backend;
+  }
+  return null;
+}
+
+/** The backend the next run would use. Only Hermes has a free-model ladder. */
+export function selectedBackendId(now = Date.now()): BackendId | null {
+  const pool = backendPool();
+  return selectBackend(pool, readHealth(), now)?.id ?? pool[0]?.id ?? null;
+}
+
+export function describeCooling(health: HealthMap, now: number): string {
+  const parts = Object.entries(health)
+    .filter(([, state]) => state.state === "cooling" && (state.until ?? 0) > now)
+    .map(([id, state]) => `${id} ${Math.ceil(((state.until ?? now) - now) / 60_000)} min`);
+  return parts.length > 0 ? parts.join(", ") : "ingen backend finns";
+}
+
+/** A quota or missing-binary fault cools the backend; auth is reported, not cooled. */
+export function applyFault(health: HealthMap, id: string, fault: BackendFault, detail: string, now: number): HealthMap {
+  const previous = health[id]?.strikes ?? 0;
+  const next: HealthMap = { ...health };
+  if (fault === "auth") {
+    next[id] = {
+      state: "available",
+      until: null,
+      strikes: previous,
+      lastError: detail.slice(0, 300),
+      lastFault: "auth",
+      updatedAt: new Date(now).toISOString(),
+    };
+    return next;
+  }
+  const strikes = previous + 1;
+  next[id] = {
+    state: "cooling",
+    until: now + nextCooldownMinutes(strikes - 1) * 60_000,
+    strikes,
+    lastError: detail.slice(0, 300),
+    lastFault: fault,
+    updatedAt: new Date(now).toISOString(),
+  };
+  return next;
+}
+
+export function applySuccess(health: HealthMap, id: string, now: number): HealthMap {
+  return {
+    ...health,
+    [id]: { state: "available", until: null, strikes: 0, lastError: null, lastFault: null, updatedAt: new Date(now).toISOString() },
+  };
+}
+
+export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number | null };
+const USAGE_FILE = join(STATE_DIR, "usage.jsonl");
+
+/** Claude Code's JSON envelope, or plain text from any other backend. */
+export function parseAgentOutput(raw: string): { text: string; usage: Usage | null } {
+  const lines = raw.trim().split("\n");
+  for (let index = lines.length - 1; index >= 0 && index >= lines.length - 40; index -= 1) {
+    const line = lines[index]!.trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      const text = typeof parsed.result === "string" ? parsed.result : raw;
+      const usage = parsed.usage as Record<string, unknown> | null | undefined;
+      if (!usage) return { text, usage: null };
+      return {
+        text,
+        usage: {
+          input: Number(usage.input_tokens ?? 0),
+          output: Number(usage.output_tokens ?? 0),
+          cacheRead: Number(usage.cache_read_input_tokens ?? 0),
+          cacheWrite: Number(usage.cache_creation_input_tokens ?? 0),
+          costUsd: typeof parsed.total_cost_usd === "number" ? parsed.total_cost_usd : null,
+        },
+      };
+    } catch {
+      /* not this line */
+    }
+  }
+  return { text: raw, usage: null };
+}
+
+/** One line per agent call, so quota use is measured instead of guessed. */
+export function appendUsage(entry: Record<string, unknown>): void {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    appendFileSync(USAGE_FILE, `${JSON.stringify(entry)}\n`);
+  } catch {
+    /* bookkeeping must never fail a task */
+  }
 }
 
 const ALLOWED_PREFIXES = ["src/", "public/", "tests/", "docs/", "scripts/", "e2e/"];
@@ -178,7 +356,7 @@ const PREFLIGHT_OK_MS = 10 * 60_000;
 const PREFLIGHT_RED_MS = 3 * 60_000;
 
 /** Hard cap on model runs per day. A paid backend must not be able to run away. */
-const DAILY_MAX = Math.max(1, Number(process.env.AGENT_DAILY_MAX ?? 12));
+const DAILY_MAX = Math.max(1, Number(process.env.AGENT_DAILY_MAX ?? 6));
 
 function dailyUsage(state: State): { date: string; tasks: number } {
   const today = new Date().toISOString().slice(0, 10);
@@ -891,9 +1069,10 @@ export function quarantineDuplicates(root = ROOT, targetDir?: string): string[] 
 function resolveModel(state: State): string | null {
   // The backend decides first: a cached Hermes model name must never be reported
   // for a Claude run (it was, once, and the report said the wrong thing).
-  if (AGENT_CLI === "claude") {
-    // Claude Code picks its own model; there is no free-model ladder to probe.
-    const model = process.env.AGENT_MODEL ?? "claude-default";
+  const selected = selectedBackendId();
+  if (selected && selected !== "hermes") {
+    // Claude Code and Codex pick their own model; there is no free-model ladder.
+    const model = process.env.AGENT_MODEL ?? `${selected}-default`;
     if (state.model !== model) {
       state.model = model;
       state.modelError = null;
@@ -945,7 +1124,7 @@ const VERDICT_TTL_MS = 6 * 3_600_000;
 function probeModel(model: string): boolean {
   const cached = modelVerdicts.get(model);
   if (cached && Date.now() - cached.at < VERDICT_TTL_MS) return cached.ok;
-  if (AGENT_CLI === "claude") return true;
+  if (selectedBackendId() !== "hermes") return true;
   if (!existsSync(HERMES)) return false;
   const probe = run(
     [HERMES, "chat", "--oneshot", "-Q", "--max-turns", "1", "--run-budget", "45", "--in", ROOT, "-m", model, "--query", "Svara endast: OK"],
@@ -962,8 +1141,8 @@ function probeModel(model: string): boolean {
  * responds the current model is kept and the other strategies do the work.
  */
 export function nextModel(current: string, probe: (model: string) => boolean = probeModel): string {
-  if (AGENT_CLI === "claude") {
-    log("Claude-backend: ingen modellstege; reservstrategierna använder samma modell.");
+  if (selectedBackendId() !== "hermes") {
+    log("Backend utan modellstege (Claude/Codex): reservstrategierna använder samma modell.");
     return current;
   }
   const candidates = process.env.AGENT_MODEL ? [process.env.AGENT_MODEL] : DEFAULT_MODELS;
@@ -1039,25 +1218,15 @@ Begränsningar: inga nya beroenden, inga ändringar av prissättning, abonnemang
 Svara med en numrerad markdown-lista och inget annat.`;
   const promptPath = join(LOG_DIR, "proposal.prompt.txt");
   writeFileSync(promptPath, prompt);
-  const command =
-    AGENT_CLI === "claude"
-      ? agentCommand({ prompt, promptPath, model, turns: 16, budgetSeconds: 300 })
-      : [
-          HERMES,
-          "chat",
-          "--oneshot",
-          "-Q",
-          "--in",
-          ROOT,
-          "--max-turns",
-          "16",
-          "--run-budget",
-          "300",
-          "-m",
-          model,
-          "--query-file",
-          promptPath,
-        ];
+  const pool = backendPool();
+  const backend = selectBackend(pool, readHealth(), Date.now());
+  if (!backend) {
+    return {
+      ok: false,
+      detail: `ingen backend har tillgänglig kvot (${describeCooling(readHealth(), Date.now())}); förslagen skjuts upp utan nya försök`,
+    };
+  }
+  const command = agentCommand(backend, { prompt, promptPath, model, turns: 16, budgetSeconds: 300 });
   let result: ReturnType<typeof Bun.spawnSync>;
   try {
     result = Bun.spawnSync(command, {
@@ -1069,7 +1238,7 @@ Svara med en numrerad markdown-lista och inget annat.`;
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, detail: `agenten kunde inte startas (${AGENT_CLI}): ${message}` };
+    return { ok: false, detail: `agenten kunde inte startas (${backend.id}): ${message}` };
   }
   const output = `${result.stdout?.toString() ?? ""}${result.stderr?.toString() ?? ""}`
     .split("\n")
@@ -1186,54 +1355,131 @@ function buildPlan(input: {
   };
 }
 
-function agentRun(task: Task, plan: Plan): { ok: boolean; detail: string; output: string; seconds: number; logPath: string } {
+type AgentRun = {
+  ok: boolean;
+  detail: string;
+  output: string;
+  seconds: number;
+  logPath: string;
+  backend: BackendId | null;
+  fault: BackendFault | null;
+  usage: Usage | null;
+};
+
+function faultLabel(fault: BackendFault): string {
+  if (fault === "quota") return "kvoten är slut";
+  if (fault === "auth") return "inloggningen fungerar inte";
+  return "körbar fil saknas";
+}
+
+/**
+ * One agent call. A quota fault moves the backend to cooldown and tries the next
+ * one at most once, so a spent quota never burns the task's strategy ladder — and
+ * when every backend is cooling the task waits instead of retrying.
+ */
+function agentRun(task: Task, plan: Plan): AgentRun {
   mkdirSync(LOG_DIR, { recursive: true });
   const logPath = join(LOG_DIR, `task-${task.id}-${stamp()}.log`);
   const promptPath = join(LOG_DIR, `task-${task.id}.prompt.txt`);
   writeFileSync(promptPath, plan.prompt);
 
+  const pool = backendPool();
+  let health = readHealth();
+  const collected: string[] = [];
   const started = performance.now();
-  const command = agentCommand({
-    prompt: plan.prompt,
-    promptPath,
-    model: plan.model,
-    turns: plan.turns,
-    budgetSeconds: plan.budgetSeconds,
-  });
-  let result: ReturnType<typeof Bun.spawnSync>;
-  try {
-    result = Bun.spawnSync(command, {
-      cwd: ROOT,
-      env: { ...process.env, PATH: `${join(homedir(), ".local", "bin")}:${process.env.PATH ?? ""}` },
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: (plan.budgetSeconds + 120) * 1000,
+
+  for (let step = 0; step < 2; step += 1) {
+    const now = Date.now();
+    const backend = selectBackend(pool, health, now);
+    if (!backend) {
+      const detail = `ingen backend har tillgänglig kvot (${describeCooling(health, now)}); uppgiften väntar utan nya försök`;
+      writeFileSync(logPath, [...collected, detail].join("\n"));
+      return { ok: false, detail, output: detail, seconds: 0, logPath, backend: null, fault: "quota", usage: null };
+    }
+    const command = agentCommand(backend, {
+      prompt: plan.prompt,
+      promptPath,
+      model: plan.model,
+      turns: plan.turns,
+      budgetSeconds: plan.budgetSeconds,
     });
-  } catch (error) {
-    // A missing or unusable agent binary is a configuration failure, not a
-    // crash: the attempt is recorded and rolled back like any other failure.
-    const message = error instanceof Error ? error.message : String(error);
-    writeFileSync(logPath, `kunde inte starta agenten (${AGENT_CLI}): ${message}\n`);
-    return {
-      ok: false,
-      detail: `agenten kunde inte startas (${AGENT_CLI}): ${message}`,
-      output: message,
-      seconds: 0,
-      logPath,
-    };
+    let result: ReturnType<typeof Bun.spawnSync>;
+    try {
+      result = Bun.spawnSync(command, {
+        cwd: ROOT,
+        env: { ...process.env, PATH: `${join(homedir(), ".local", "bin")}:${process.env.PATH ?? ""}` },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: (plan.budgetSeconds + 120) * 1000,
+      });
+    } catch (error) {
+      // A missing or unusable agent binary is a configuration failure, not a
+      // crash: the backend cools down and the attempt is recorded.
+      const message = error instanceof Error ? error.message : String(error);
+      health = applyFault(health, backend.id, "unavailable", message, Date.now());
+      writeHealth(health);
+      const detail = `agenten kunde inte startas (${backend.id}): ${message}`;
+      writeFileSync(logPath, [...collected, detail].join("\n"));
+      return { ok: false, detail, output: message, seconds: 0, logPath, backend: backend.id, fault: "unavailable", usage: null };
+    }
+
+    const raw = `${result.stdout?.toString() ?? ""}\n${result.stderr?.toString() ?? ""}`.trim();
+    collected.push(raw);
+    const { text, usage } = parseAgentOutput(raw);
+    const seconds = Math.round((performance.now() - started) / 100) / 10;
+
+    if (result.exitCode === 0) {
+      health = applySuccess(health, backend.id, Date.now());
+      writeHealth(health);
+      const blocked = /^BLOCKED\b/m.test(text);
+      const ranOut = /ran out of steps|run out of turns|max_iterations|run budget/i.test(text);
+      const tail = text.split("\n").filter(Boolean).slice(-6).join(" | ").slice(0, 900);
+      appendUsage({ at: new Date().toISOString(), task: task.id, backend: backend.id, seconds, usage, exit: 0 });
+      writeFileSync(logPath, collected.join("\n\n"));
+      return {
+        ok: !blocked && !ranOut,
+        detail: blocked ? `BLOCKED: ${tail}` : ranOut ? `slut på turer eller tidsbudget: ${tail}` : tail || "(inget svar)",
+        output: text,
+        seconds,
+        logPath,
+        backend: backend.id,
+        fault: null,
+        usage,
+      };
+    }
+
+    // A non-zero exit may mean the backend ran dry, not that the attempt was bad.
+    const fault = classifyBackendOutput(`${raw}\n${text}`);
+    const tail = raw.split("\n").filter(Boolean).slice(-6).join(" | ").slice(0, 900);
+    appendUsage({ at: new Date().toISOString(), task: task.id, backend: backend.id, seconds, usage, exit: result.exitCode, fault });
+    writeFileSync(logPath, collected.join("\n\n"));
+    if (fault) {
+      health = applyFault(health, backend.id, fault, tail, Date.now());
+      writeHealth(health);
+      log(`backend ${backend.id}: ${faultLabel(fault)} — ${fault === "auth" ? "ingen cooldown, uppgiften parkeras" : "cooldown satt"}.`);
+      const alternative =
+        fault === "auth" ? null : selectBackend(pool.filter((candidate) => candidate.id !== backend.id), health, Date.now());
+      if (alternative && step === 0) {
+        log(`byter backend till ${alternative.id} för samma försök.`);
+        continue;
+      }
+      return {
+        ok: false,
+        detail: `${backend.id}: ${faultLabel(fault)} — ${tail || "(inget svar)"}`,
+        output: raw,
+        seconds,
+        logPath,
+        backend: backend.id,
+        fault,
+        usage,
+      };
+    }
+    return { ok: false, detail: tail || "(inget svar)", output: raw, seconds, logPath, backend: backend.id, fault: null, usage };
   }
-  const output = `${result.stdout?.toString() ?? ""}\n${result.stderr?.toString() ?? ""}`.trim();
-  writeFileSync(logPath, output);
-  const blocked = /^BLOCKED\b/m.test(output);
-  const ranOut = /ran out of steps|run out of turns|max_iterations|run budget/i.test(output);
-  const tail = output.split("\n").filter(Boolean).slice(-6).join(" | ").slice(0, 900);
-  return {
-    ok: result.exitCode === 0 && !blocked && !ranOut,
-    detail: blocked ? `BLOCKED: ${tail}` : ranOut ? `slut på turer eller tidsbudget: ${tail}` : tail || "(inget svar)",
-    output,
-    seconds: Math.round((performance.now() - started) / 100) / 10,
-    logPath,
-  };
+
+  const detail = "backendförsöken är slut för denna uppgift";
+  writeFileSync(logPath, [...collected, detail].join("\n"));
+  return { ok: false, detail, output: detail, seconds: 0, logPath, backend: null, fault: null, usage: null };
 }
 
 type Check = { name: string; ok: boolean; seconds: number; detail: string; output: string };
@@ -1503,6 +1749,16 @@ function cycleWork(options: { dryRun?: boolean } = {}): CycleResult {
   const daily = dailyUsage(state);
   if (daily.tasks >= DAILY_MAX) {
     return { ok: true, halt: true, detail: `dygnsgränsen är nådd (${daily.tasks}/${DAILY_MAX} uppgifter idag); fortsätter i morgon.` };
+  }
+  // Z0: no quota anywhere means wait, not retry. Nothing is picked, snapshotted
+  // or counted, so a spent quota costs the queue nothing.
+  const healthy = readHealth();
+  if (!selectBackend(backendPool(), healthy, Date.now())) {
+    return {
+      ok: true,
+      halt: true,
+      detail: `väntar på kvot: ${describeCooling(healthy, Date.now())}; uppgifterna ligger kvar som pending och inga försök förbrukas.`,
+    };
   }
   const next = nextPending(backlog);
   if (!next) {
