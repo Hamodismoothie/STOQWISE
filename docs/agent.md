@@ -54,6 +54,23 @@ gratis modeller som samma konto erbjuder:
 Modellen kan bytas med `AGENT_MODEL` (till exempel en betalmodell om kontot får
 krediter) utan att någon kod ändras.
 
+### Utbytbar backend (2026-11-25)
+
+Hermes-binären försvann från `~/.local/bin` samma kväll som Fas 0 verifierades.
+Varje cykel kastade då `ENOENT` **efter** att uppgiften valts, vilket såg ut som
+ett kodfel men var en saknad förutsättning. Motorn äger uppgiften, grindarna och
+återställningen; agenten är nu en utbytbar kommandolinje:
+
+| `AGENT_CLI` | Kommando | Modell |
+|---|---|---|
+| `hermes` (standard) | `hermes chat --oneshot --query-file …` | Nous gratismodeller |
+| `claude` | `claude -p … --permission-mode acceptEdits --allowedTools …` | Claude Codes egen modell |
+
+Ett saknat eller oanvändbart CLI blir nu ett **namngivet fel** (`agenten kunde
+inte startas …`), aldrig ett kastat undantag: försöket rullas tillbaka och nästa
+strategi eller uppgift får sin tur. `AGENT_DAILY_MAX` (12) räknar
+modellkörningar per dygn i `state.json`, så en betald backend inte kan skena.
+
 ## Grindar och säkerhet
 
 - **Endast** `src/`, `public/`, `tests/`, `docs/`, `scripts/` får ändras.
@@ -199,7 +216,8 @@ föregående. Tills dess står cykeln still med beskedet att förslagen väntar 
 granskning, så modellen inte anropas i onödan. Om modellen ändå ger exakt samma
 text som förra gången skrivs ingen ny rubrik, utan bara en rad i loggen.
 
-Miljövariabler: `AGENT_MODEL`, `AGENT_TASK_BUDGET_SECONDS` (600 per agentkörning),
+Miljövariabler: `AGENT_CLI` (`hermes` eller `claude`), `CLAUDE_BIN`, `AGENT_DAILY_MAX` (12
+modellkörningar per dygn), `AGENT_MODEL`, `AGENT_TASK_BUDGET_SECONDS` (600 per agentkörning),
 `AGENT_MAX_TURNS` (30), `AGENT_MAX_ATTEMPTS` (4, ett per reservstrategi),
 `AGENT_TASK_WALL_SECONDS` (900, väggklocka per uppgift), `WORKER_DEV_AGENT=false`
 (stänger av utveckling men behåller verifieringen), `WORKER_AGENT_TASKS` (2,

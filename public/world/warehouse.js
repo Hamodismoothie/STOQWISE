@@ -18,7 +18,7 @@
  * `/api/v1/demo/what-if`, which runs the real analysis engine.
  */
 import * as THREE from "/vendor/three/three.module.js";
-import { effectiveDpr } from "/perf.js";
+import { createRenderGate, effectiveDpr } from "/perf.js";
 import { knockedCones, stepTruck } from "/world/arcade.js";
 import { cardboardTexture, woodTexture } from "/world/textures.js";
 import {
@@ -548,7 +548,10 @@ export function createWorld({ root, canvas, data, locale = "sv", onStats }) {
   let progress = 0;
   let month = 12;
   let clock = 0;
-  let paused = false;
+  // Pausgrinden från perf.ts: renderar bara när fliken syns och canvasen är i
+  // viewport. Ersätter den tidigare lokala paus-flaggan.
+  const gate = createRenderGate({ hidden: document.hidden });
+  let loopScheduled = false;
   let disposed = false;
   let explore = false;
   let truckSpeed = 0;
@@ -1047,6 +1050,8 @@ export function createWorld({ root, canvas, data, locale = "sv", onStats }) {
     webgl: hasWebgl,
     rows: first.rowCount,
     pallets: 0,
+    /** Antal faktiskt renderade frames; används för att verifiera pausen. */
+    frames: 0,
   };
 
   /* ------------------------------------------------------------------ view */
@@ -1140,7 +1145,7 @@ export function createWorld({ root, canvas, data, locale = "sv", onStats }) {
   }
 
   function renderFrame(now) {
-    if (disposed || paused) return;
+    if (disposed || !gate.isActive()) return;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     clock += dt;
@@ -1162,6 +1167,7 @@ export function createWorld({ root, canvas, data, locale = "sv", onStats }) {
 
     if (renderer) {
       renderer.render(scene, camera);
+      stats.frames++;
       const info = renderer.info.render;
       stats.drawCalls = info.calls;
       stats.triangles = info.triangles;
@@ -1175,13 +1181,18 @@ export function createWorld({ root, canvas, data, locale = "sv", onStats }) {
     if (onStats && frameCount % 30 === 0) onStats({ ...stats, fps });
   }
 
-  function loop(now) {
-    if (disposed) return;
+  /** Begär nästa frame bara när loopen ska gå; aldrig två köade samtidigt. */
+  function scheduleLoop() {
+    if (loopScheduled || disposed || reduced || !renderer || !gate.isActive()) return;
+    loopScheduled = true;
     requestAnimationFrame(loop);
-    if (paused) {
-      last = now;
-      return;
-    }
+  }
+
+  function loop(now) {
+    loopScheduled = false;
+    // En frame som redan låg i kö när grinden stängdes ska inte renderas.
+    if (disposed || !gate.isActive()) return;
+    scheduleLoop();
     const frameMs = now - last;
     frameTimeSum += frameMs;
     frameCount++;
@@ -1215,18 +1226,25 @@ export function createWorld({ root, canvas, data, locale = "sv", onStats }) {
     applyStoryGoal(reduced ? 0.36 : 0);
     easeView(1);
     renderFrame(performance.now());
-    if (!reduced) requestAnimationFrame(loop);
+    scheduleLoop();
   }
+
+  gate.onChange((active) => {
+    if (!active) return;
+    // Pausen ska inte räknas som en lång frame vid återstart.
+    last = performance.now();
+    scheduleLoop();
+  });
 
   on(window, "resize", resize);
   on(document, "visibilitychange", () => {
-    paused = document.hidden;
+    gate.setHidden(document.hidden);
   });
   const gateObserver =
     "IntersectionObserver" in window
       ? new IntersectionObserver(
           (entries) => {
-            for (const entry of entries) paused = !entry.isIntersecting || document.hidden;
+            for (const entry of entries) gate.setIntersecting(entry.isIntersecting);
           },
           { rootMargin: "120px" },
         )

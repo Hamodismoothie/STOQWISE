@@ -42,6 +42,25 @@ Verifierat efter ändringen: `bun run typecheck` 0 fel · `bun test` 494 godkän
 1 överhoppad / 0 fel (495 tester, 42 filer) · `bun scripts/backlog-lint.ts`
 giltig · `bun scripts/autopilot.ts --quick` alla steg gröna.
 
+## Backend och första demonstrationen (2026-11-25)
+
+Hermes-binären försvann från `~/.local/bin` samma kväll som Fas 0 skulle
+verifieras; varje cykel kastade `ENOENT` efter att uppgiften valts. Motorn har nu
+en utbytbar backend (`AGENT_CLI=hermes|claude`), och ett saknat CLI blir ett
+namngivet fel i stället för ett kastat undantag. Ett dygnstak (`AGENT_DAILY_MAX`,
+12) räknar modellkörningar per dygn så en betald backend inte kan skena.
+
+Första fullständiga körningen med den reparerade kedjan, `qa-11`: återupptog en
+avbruten uppgift och återställde trädet → ögonblicksbild (268 filer) → agenten
+ändrade `scripts/autopilot.ts` → försök 1 föll på ett test → strategin
+`tests-repair` → grönt på typkontroll, 495 tester och `accept`
+(`bun scripts/autopilot.ts --quick`) → commit `0928c5e` → `status: done`.
+Rapport: `data/agent/reports/qa-11-2026-11-25T17-44-37-727Z.json`.
+
+Känt fel i just den rapporten: fältet `model` säger `tencent/hy4-flash:free` fast
+körningen gjordes med Claude Code — modellnamnet lästes ur en cache före
+backend-kontrollen. Koden är rättad; rapporten lämnas orörd som bevis.
+
 ## Så fungerar den autonoma slingan
 
 `scripts/worker.ts` verifierar först och låter sedan `scripts/dev-agent.ts` ta en

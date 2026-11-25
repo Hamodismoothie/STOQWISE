@@ -74,6 +74,51 @@ test("frametid i scen 2 och 3, desktop och 4× CPU", async ({ page }) => {
 });
 
 /**
+ * Pausgrinden: när fliken döljs ska scenen inte rendera en enda frame till,
+ * inte ens den som redan låg i kö, och den ska starta igen när fliken syns.
+ * `document.hidden` skuggas på sidan eftersom Playwright inte kan dölja fliken.
+ */
+test("3D-scenen pausar när fliken är dold och startar igen", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#varld").scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => Boolean((window as any).__world), undefined, { timeout: 45_000 });
+  await page.locator("[data-world-stage]").scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => (window as any).__world.stats().frames > 10, undefined, { timeout: 15_000 });
+
+  const setHidden = (hidden: boolean) =>
+    page.evaluate((value) => {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => value });
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (value ? "hidden" : "visible") });
+      document.dispatchEvent(new Event("visibilitychange"));
+      return (window as any).__world.stats().frames as number;
+    }, hidden);
+
+  // Räkna scenloopens egna rAF-anrop (`loop` i warehouse.js) under pausen: en
+  // pausad loop ska inte ens begära frames. Andra rAF-användare, till exempel
+  // scrollföljaren i boot.js, räknas inte.
+  await page.evaluate(() => {
+    const original = window.requestAnimationFrame.bind(window);
+    (window as any).__sceneRafCalls = 0;
+    window.requestAnimationFrame = (cb) => {
+      if (cb.name === "loop") (window as any).__sceneRafCalls++;
+      return original(cb);
+    };
+  });
+  const atPause = await setHidden(true);
+  await page.waitForTimeout(600);
+  const paused = await page.evaluate(() => ({
+    frames: (window as any).__world.stats().frames as number,
+    raf: (window as any).__sceneRafCalls as number,
+  }));
+  expect(paused.frames).toBe(atPause);
+  expect(paused.raf).toBe(0);
+  const afterPause = paused.frames;
+
+  await setHidden(false);
+  await page.waitForFunction((base) => (window as any).__world.stats().frames > base + 5, afterPause, { timeout: 5_000 });
+});
+
+/**
  * LCP och CLS på startsidan och produktsidan.
  *
  * Mätt i webbläsaren med PerformanceObserver: LCP är starttiden för den sista

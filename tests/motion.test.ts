@@ -104,8 +104,12 @@ describe("prestandabudget", () => {
   test("båda renderarna hämtar DPR från den serverade perf-modulen", () => {
     expect(SERVER).toContain('"/perf.js": "ui/perf.ts"');
     for (const { name, source } of RENDERERS) {
-      expect(source, name).toContain('import { effectiveDpr } from "/perf.js";');
+      expect(source, name).toMatch(/import \{ (createRenderGate, )?effectiveDpr \} from "\/perf\.js";/);
       expect(source, name).toContain("effectiveDpr(");
+      // Pausgrinden från perf.ts styr loopen: ingen frame när fliken är dold
+      // eller canvasen ligger utanför viewport.
+      expect(source, name).toContain("createRenderGate(");
+      expect(source, name).toContain("gate.isActive()");
       // Full kvalitet är startvärdet i båda renderlooparna.
       expect(source, name).toContain("let quality = 2;");
     }

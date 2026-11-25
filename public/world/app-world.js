@@ -12,7 +12,7 @@
  * or scrolled out of view, and the renderer caps the pixel ratio.
  */
 import * as THREE from "/vendor/three/three.module.js";
-import { effectiveDpr } from "/perf.js";
+import { createRenderGate, effectiveDpr } from "/perf.js";
 import { cardboardTexture, woodTexture } from "/world/textures.js";
 import {
   LOAD_HEIGHT,
@@ -1556,7 +1556,10 @@ export function createAppWorld({
   /* ------------------------------------------------------------- loop */
   let loopRunning = true;
   let paused = false;
-  let inView = true;
+  // Pausgrinden från perf.ts: loopen går bara när fliken syns och canvasen är
+  // i viewport. `paused` ovan är användarens egen paus och hanteras separat.
+  const gate = createRenderGate({ hidden: document.hidden });
+  let loopScheduled = false;
   let last = performance.now();
   let frameCount = 0;
   let frameWindowStart = performance.now();
@@ -1569,18 +1572,36 @@ export function createAppWorld({
 
   const observer = new IntersectionObserver(
     (entries) => {
-      inView = entries.some((entry) => entry.isIntersecting);
+      gate.setIntersecting(entries.some((entry) => entry.isIntersecting));
     },
     { threshold: 0.05 },
   );
   observer.observe(canvas);
+  const onTabVisibility = () => gate.setHidden(document.hidden);
+  document.addEventListener("visibilitychange", onTabVisibility);
+
+  /** Begär nästa frame bara när loopen ska gå; aldrig två köade samtidigt. */
+  function scheduleTick() {
+    if (loopScheduled || !loopRunning || !gate.isActive()) return;
+    loopScheduled = true;
+    requestAnimationFrame(tick);
+  }
+
+  gate.onChange((active) => {
+    if (!active) return;
+    // Pausen ska inte räknas som en lång frame vid återstart.
+    last = performance.now();
+    scheduleTick();
+  });
 
   function tick(now) {
-    if (!loopRunning) return;
-    requestAnimationFrame(tick);
+    loopScheduled = false;
+    // En frame som redan låg i kö när grinden stängdes ska inte renderas.
+    if (!loopRunning || !gate.isActive()) return;
+    scheduleTick();
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    if (paused || document.hidden || !inView) return;
+    if (paused) return;
     clock += dt;
 
     // Detail level follows the camera: close up shows real pallets and carton
@@ -1877,6 +1898,7 @@ export function createAppWorld({
     dispose() {
       loopRunning = false;
       observer.disconnect();
+      document.removeEventListener("visibilitychange", onTabVisibility);
       resizeObserver.disconnect();
       window.removeEventListener("resize", resize);
       renderer.dispose();
@@ -1895,7 +1917,7 @@ export function createAppWorld({
     paused = true;
     onStats?.(stats());
   }
-  requestAnimationFrame(tick);
+  scheduleTick();
   return api;
 }
 
